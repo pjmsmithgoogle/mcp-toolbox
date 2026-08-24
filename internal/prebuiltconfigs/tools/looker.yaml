@@ -919,6 +919,60 @@ description: |
   - width (optional): The new width.
   - height (optional): The new height.
 ---
+kind: tool
+name: render_visualization
+type: looker-render-visualization
+source: looker-source
+ui:
+  resource_uri: ui://looker/render_visualization.html
+  visibility:
+  - model
+  - app
+  csp:
+    resource_domains:
+    - https://*.lookercdn.com
+    - https://lookercdn.com
+    - https://*.cdn.looker.app
+    - https://cdn.looker.app
+    - https://maps.googleapis.com
+    - https://maps.gstatic.com
+    - https://fonts.googleapis.com
+    - https://fonts.gstatic.com
+    - https://www.google.com
+    - https://www.gstatic.com
+    - https://*.googleapis.com
+    - https://*.gstatic.com
+    - https://*.google.com
+    - https://*.goog
+    - https://*.googleusercontent.com
+    connect_domains:
+    - https://*.lookercdn.com
+    - https://lookercdn.com
+    - https://*.cdn.looker.app
+    - https://cdn.looker.app
+    - https://maps.googleapis.com
+    - https://maps.gstatic.com
+    - https://*.googleapis.com
+    - https://*.gstatic.com
+    - https://*.google.com
+    - https://*.goog
+description: |
+  This tool executes a query against a LookML model or fetches a saved query by ID/slug and returns an interactive UI visualization response adhering to the MCP Apps specification.
+
+  Parameters:
+  - query_id (optional): Looker query ID (integer) or slug string to fetch and render a saved query visualization directly. If provided, model and explore are not required.
+  - model (optional): The name of the LookML model (required if query_id is not provided).
+  - explore (optional): The name of the explore (required if query_id is not provided).
+  - fields (optional): A list of field names (dimensions, measures, filters, or parameters) to include in the query.
+  - pivots (optional): A list of fields to pivot the results by.
+  - filters (optional): A map of filter expressions, e.g., `{"view_name.field_name": "value"}`.
+  - filter_expression (optional): A Looker expression filter string (custom filter).
+  - dynamic_fields (optional): An optional array of dynamic fields (table calculations, custom measures, custom dimensions).
+  - sorts (optional): A list of fields to sort by (e.g. `["users.created_date desc"]`).
+  - limit (optional): Maximum number of rows to return (default: 500).
+  - tz (optional): Timezone for the query.
+  - vis_config (optional): Optional JSON string or object specifying the visualization configuration (e.g. chart type, legend, colors).
+---
 kind: group
 name: looker_tools
 description: These skills are designed for data discovery and business intelligence.
@@ -933,6 +987,7 @@ tools:
 - query
 - query_sql
 - query_url
+- render_visualization
 - get_looks
 - run_look
 - make_look
@@ -946,3 +1001,4 @@ tools:
 - update_dashboard_element
 - create_dashboard_layout
 - update_dashboard_layout_component
+

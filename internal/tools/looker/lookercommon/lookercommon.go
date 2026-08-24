@@ -535,3 +535,34 @@ func CreateViewsFromTables(ctx context.Context, l *v4.LookerSDK, projectId strin
 	logger.DebugContext(ctx, fmt.Sprintf("generating views with request: query=%v body=%v error=%v", query, reqBody.Tables, err))
 	return err
 }
+
+func GetQuery(ctx context.Context, l *v4.LookerSDK, queryId string, options *rtl.ApiSettings) (*v4.Query, error) {
+	var result v4.Query
+	path := fmt.Sprintf("/queries/%s", url.PathEscape(queryId))
+	err := l.AuthSession.Do(&result, "GET", "/4.0", path, nil, nil, options)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func GetQueryBySlug(ctx context.Context, l *v4.LookerSDK, slug string, options *rtl.ApiSettings) (*v4.Query, error) {
+	var result v4.Query
+	path := fmt.Sprintf("/queries/slug/%s", url.PathEscape(slug))
+	err := l.AuthSession.Do(&result, "GET", "/4.0", path, nil, nil, options)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func RunSavedQuery(ctx context.Context, l *v4.LookerSDK, queryId string, format string, options *rtl.ApiSettings) (string, error) {
+	var result string
+	path := fmt.Sprintf("/queries/%s/run/%s", url.PathEscape(queryId), url.PathEscape(format))
+	err := l.AuthSession.Do(&result, "GET", "/4.0", path, nil, nil, options)
+	if err != nil {
+		// Also try POST if GET failed
+		err = l.AuthSession.Do(&result, "POST", "/4.0", path, nil, nil, options)
+	}
+	return result, err
+}

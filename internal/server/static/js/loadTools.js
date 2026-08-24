@@ -130,12 +130,18 @@ function renderToolDetails(toolName, toolDisplayArea) {
 
     let toolAuthRequired = [];
     let toolAuthParams = {};
+    let toolUIMeta = null;
     if (toolObject._meta) {
         if (toolObject._meta["toolbox/authInvoke"]) {
             toolAuthRequired = toolObject._meta["toolbox/authInvoke"];
         }
         if (toolObject._meta["toolbox/authParam"]) {
             toolAuthParams = toolObject._meta["toolbox/authParam"];
+        }
+        if (toolObject._meta.ui && toolObject._meta.ui.resourceUri) {
+            toolUIMeta = toolObject._meta.ui;
+        } else if (toolObject._meta["ui/resourceUri"]) {
+            toolUIMeta = { resourceUri: toolObject._meta["ui/resourceUri"] };
         }
     }
 
@@ -181,7 +187,8 @@ function renderToolDetails(toolName, toolDisplayArea) {
         name: toolName,
         description: toolObject.description || "No description provided.",
         authRequired: toolAuthRequired,
-        parameters: toolParameters
+        parameters: toolParameters,
+        ui: toolUIMeta
     };
 
     console.debug("Transformed toolInterfaceData:", toolInterfaceData);

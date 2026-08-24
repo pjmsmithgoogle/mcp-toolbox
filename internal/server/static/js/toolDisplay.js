@@ -357,8 +357,9 @@ export function renderToolInterface(tool, containerElement) {
     const nameBox = document.createElement('div');
     const descBox = document.createElement('div');
 
+    const isAppTool = Boolean(tool.ui && tool.ui.resourceUri);
     nameBox.className = 'tool-box tool-name';
-    nameBox.innerHTML = `<h5>Name:</h5><p>${escapeHtml(tool.name)}</p>`;
+    nameBox.innerHTML = `<h5>Name:</h5><div class="tool-name-container"><p>${escapeHtml(tool.name)}</p>${isAppTool ? `<span class="mcp-app-badge" title="MCP App (${escapeHtml(tool.ui.resourceUri)})">MCP App (UI)</span>` : ''}</div>`;
     descBox.className = 'tool-box tool-description';
     descBox.innerHTML = `<h5>Description:</h5><p>${escapeHtml(tool.description)}</p>`;
 
@@ -418,6 +419,100 @@ export function renderToolInterface(tool, containerElement) {
     responseHeader.textContent = 'Response:';
     responseHeaderControls.appendChild(responseHeader);
 
+    // Tab switcher for MCP Apps
+    let appContainer = null;
+    let iframeElement = null;
+    let appStatusElement = null;
+
+    if (isAppTool) {
+        const viewTabs = document.createElement('div');
+        viewTabs.className = 'response-view-tabs';
+
+        const tabApp = document.createElement('button');
+        tabApp.className = 'response-view-tab active';
+        tabApp.textContent = 'Visual App';
+
+        const tabJson = document.createElement('button');
+        tabJson.className = 'response-view-tab';
+        tabJson.textContent = 'Raw JSON';
+
+        viewTabs.appendChild(tabApp);
+        viewTabs.appendChild(tabJson);
+        responseHeaderControls.appendChild(viewTabs);
+
+        appContainer = document.createElement('div');
+        appContainer.className = 'mcp-app-container';
+        appContainer.id = `mcp-app-container-${TOOL_ID}`;
+
+        const appTopBar = document.createElement('div');
+        appTopBar.className = 'mcp-app-topbar';
+
+        const uriInfo = document.createElement('div');
+        uriInfo.className = 'mcp-app-uri';
+        uriInfo.innerHTML = `<span>Resource:</span> <code>${escapeHtml(tool.ui.resourceUri)}</code>`;
+
+        appStatusElement = document.createElement('div');
+        appStatusElement.className = 'mcp-app-status';
+        appStatusElement.textContent = 'App Ready';
+
+        const exitFullscreenBtn = document.createElement('button');
+        exitFullscreenBtn.className = 'mcp-app-exit-fullscreen-btn';
+        exitFullscreenBtn.innerHTML = '⤓ Exit Fullscreen';
+        exitFullscreenBtn.style.display = 'none';
+        exitFullscreenBtn.style.marginLeft = 'auto';
+        exitFullscreenBtn.style.padding = '4px 10px';
+        exitFullscreenBtn.style.fontSize = '12px';
+        exitFullscreenBtn.style.cursor = 'pointer';
+        exitFullscreenBtn.style.background = '#e8f0fe';
+        exitFullscreenBtn.style.color = '#1a73e8';
+        exitFullscreenBtn.style.border = '1px solid #1a73e8';
+        exitFullscreenBtn.style.borderRadius = '4px';
+        exitFullscreenBtn.style.fontWeight = '500';
+        exitFullscreenBtn.addEventListener('click', () => {
+            setAppDisplayMode(appContainer, iframeElement, 'inline');
+            if (iframeElement && iframeElement.contentWindow) {
+                iframeElement.contentWindow.postMessage({
+                    jsonrpc: '2.0',
+                    method: 'ui/notifications/host-context-changed',
+                    params: { displayMode: 'inline' }
+                }, '*');
+            }
+        });
+
+        appTopBar.appendChild(uriInfo);
+        appTopBar.appendChild(appStatusElement);
+        appTopBar.appendChild(exitFullscreenBtn);
+        appContainer.appendChild(appTopBar);
+
+        iframeElement = document.createElement('iframe');
+        iframeElement.id = `mcp-app-iframe-${TOOL_ID}`;
+        iframeElement.className = 'mcp-app-iframe';
+        iframeElement.title = `MCP App - ${tool.name}`;
+        iframeElement.setAttribute('sandbox', 'allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-storage-access-by-user-activation');
+        iframeElement.setAttribute('allow', 'fullscreen; clipboard-read; clipboard-write');
+        appContainer.appendChild(iframeElement);
+
+        tabApp.addEventListener('click', (e) => {
+            e.preventDefault();
+            tabApp.classList.add('active');
+            tabJson.classList.remove('active');
+            appContainer.style.display = 'flex';
+            appContainer.style.flexDirection = 'column';
+            responseArea.style.display = 'none';
+        });
+
+        tabJson.addEventListener('click', (e) => {
+            e.preventDefault();
+            tabJson.classList.add('active');
+            tabApp.classList.remove('active');
+            appContainer.style.display = 'none';
+            responseArea.style.display = 'block';
+        });
+
+        // Pre-fetch the resource HTML
+        loadAppResource(tool.ui.resourceUri, iframeElement, appStatusElement, currentHeaders);
+    }
+
     // prettify box
     const PRETTIFY_ID = `prettify-${TOOL_ID}`;
     const prettifyDiv = document.createElement('div');
@@ -440,11 +535,18 @@ export function renderToolInterface(tool, containerElement) {
     responseHeaderControls.appendChild(prettifyDiv);
     responseContainer.appendChild(responseHeaderControls);
 
+    if (appContainer) {
+        responseContainer.appendChild(appContainer);
+    }
+
     responseArea.id = RESPONSE_AREA_ID;
     responseArea.readOnly = true;
     responseArea.placeholder = 'Results will appear here...';
     responseArea.className = 'tool-response-area';
     responseArea.rows = 10;
+    if (isAppTool) {
+        responseArea.style.display = 'none'; // Default to visual app view for App tools
+    }
     responseContainer.appendChild(responseArea);
 
     containerElement.appendChild(responseContainer);
@@ -461,9 +563,260 @@ export function renderToolInterface(tool, containerElement) {
 
     runButton.addEventListener('click', (event) => {
         event.preventDefault();
-        handleRunTool(TOOL_ID, form, responseArea, tool.parameters, prettifyCheckbox, updateLastResults, currentHeaders);
+        handleRunTool(TOOL_ID, form, responseArea, tool.parameters, prettifyCheckbox, updateLastResults, currentHeaders, tool.ui);
     });
 }
+
+/**
+ * Helper function to transition MCP App container between inline and fullscreen.
+ */
+function setAppDisplayMode(mcpContainer, iframeElement, mode) {
+    const container = mcpContainer || iframeElement?.closest('.mcp-app-container') || document.querySelector('.mcp-app-container');
+    const iframe = iframeElement || container?.querySelector('.mcp-app-iframe') || document.querySelector('.mcp-app-iframe');
+    const exitBtn = container?.querySelector('.mcp-app-exit-fullscreen-btn');
+
+    if (mode === 'fullscreen') {
+        if (container) {
+            container.classList.add('mcp-app-fullscreen');
+            container.style.cssText = 'position: fixed !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important; width: 100vw !important; height: 100vh !important; max-width: 100vw !important; max-height: 100vh !important; z-index: 2147483647 !important; margin: 0 !important; padding: 0 !important; border: none !important; border-radius: 0 !important; display: flex !important; flex-direction: column !important; background-color: #ffffff !important; box-sizing: border-box !important;';
+        }
+        if (iframe) {
+            iframe.style.cssText = 'width: 100% !important; height: 100% !important; flex: 1 1 100% !important; min-height: 0 !important; border: none !important; box-sizing: border-box !important;';
+        }
+        if (exitBtn) {
+            exitBtn.style.display = 'inline-block';
+        }
+        document.body.classList.add('mcp-app-fullscreen-active');
+    } else {
+        if (container) {
+            container.classList.remove('mcp-app-fullscreen');
+            container.removeAttribute('style');
+            container.style.display = 'flex';
+            container.style.flexDirection = 'column';
+        }
+        if (iframe) {
+            iframe.removeAttribute('style');
+        }
+        if (exitBtn) {
+            exitBtn.style.display = 'none';
+        }
+        document.body.classList.remove('mcp-app-fullscreen-active');
+    }
+
+    if (iframe && iframe.contentWindow) {
+        iframe.contentWindow.postMessage({
+            jsonrpc: '2.0',
+            method: 'ui/notifications/host-context-changed',
+            params: { displayMode: mode }
+        }, '*');
+        iframe.contentWindow.postMessage({
+            type: 'ui/host_context_changed',
+            displayMode: mode
+        }, '*');
+    }
+}
+
+/**
+ * Constructs a standard Content Security Policy string according to SEP-1865.
+ */
+function constructCsp(csp) {
+    const connect = (csp?.connectDomains || []).join(' ');
+    const resource = (csp?.resourceDomains || []).join(' ');
+    const frame = (csp?.frameDomains && csp.frameDomains.length > 0) ? csp.frameDomains.join(' ') : "'none'";
+    const baseUri = (csp?.baseUriDomains && csp.baseUriDomains.length > 0) ? csp.baseUriDomains.join(' ') : "'self'";
+
+    return `default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' ${resource}; style-src 'self' 'unsafe-inline' ${resource}; connect-src 'self' ${connect}; img-src 'self' data: ${resource}; font-src 'self' ${resource}; media-src 'self' data: ${resource}; frame-src ${frame}; object-src 'none'; base-uri ${baseUri};`.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Injects a Content-Security-Policy meta tag into the raw HTML.
+ */
+function injectCspIntoHtml(html, cspHeader) {
+    const metaTag = `<meta http-equiv="Content-Security-Policy" content="${escapeHtml(cspHeader)}">`;
+    const headIndex = html.indexOf('<head>');
+    if (headIndex !== -1) {
+        return html.slice(0, headIndex + 6) + '\n  ' + metaTag + html.slice(headIndex + 6);
+    }
+    const htmlIndex = html.indexOf('<html>');
+    if (htmlIndex !== -1) {
+        return html.slice(0, htmlIndex + 6) + '\n<head>' + metaTag + '</head>' + html.slice(htmlIndex + 6);
+    }
+    return '<head>' + metaTag + '</head>\n' + html;
+}
+
+/**
+ * Loads the HTML content for an MCP App resource into an iframe.
+ */
+async function loadAppResource(uri, iframeElement, statusElement, headers) {
+    if (!uri || !iframeElement) return;
+    try {
+        if (statusElement) statusElement.textContent = 'Loading resource...';
+        const response = await fetch('/mcp', {
+            method: 'POST',
+            headers: {
+                ...headers,
+                'Content-Type': 'application/json',
+                'MCP-Protocol-Version': '2025-11-25'
+            },
+            body: JSON.stringify({
+                jsonrpc: "2.0",
+                id: "read-resource",
+                method: "resources/read",
+                params: { uri: uri }
+            })
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP error ${response.status}`);
+        }
+        const data = await response.json();
+        if (data.result && data.result.contents && data.result.contents.length > 0) {
+            const resContent = data.result.contents[0];
+            if (resContent.text) {
+                const csp = resContent._meta?.ui?.csp;
+                const cspHeader = constructCsp(csp);
+                const finalHtml = injectCspIntoHtml(resContent.text, cspHeader);
+
+                iframeElement.srcdoc = finalHtml;
+                if (statusElement) {
+                    const domains = (csp?.resourceDomains || []).concat(csp?.connectDomains || []);
+                    if (domains.length > 0) {
+                        statusElement.title = `Enforced CSP: ${domains.join(', ')}`;
+                        statusElement.textContent = 'App Ready (CSP Enforced)';
+                    } else {
+                        statusElement.textContent = 'App Ready (Restricted CSP)';
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Error fetching UI resource:', e);
+        if (statusElement) statusElement.textContent = `Error loading resource: ${e.message}`;
+    }
+}
+
+// MCP Apps Host Protocol Handshake handler
+window.addEventListener('message', (event) => {
+    const data = event.data;
+    if (data && typeof data === 'object') {
+        console.debug('[MCP Host Received Message]', data);
+        if (data.method === 'ui/initialize' && data.id) {
+            console.debug('Handling MCP Apps initialize request:', data);
+            event.source?.postMessage({
+                jsonrpc: '2.0',
+                id: data.id,
+                result: {
+                    protocolVersion: data.params?.protocolVersion || '2026-01-26',
+                    hostInfo: { name: 'MCP Toolbox Playground', version: '1.0.0' },
+                    hostCapabilities: {
+                        openLinks: {},
+                        serverTools: {},
+                        serverResources: {}
+                    },
+                    hostContext: {
+                        theme: 'light',
+                        displayMode: 'inline',
+                        platform: 'web',
+                        deviceCapabilities: {
+                            touch: false,
+                            hover: true
+                        }
+                    }
+                }
+            }, '*');
+        } else if (data.method === 'ui/request-display-mode' || data.method === 'requestDisplayMode' || data.type === 'ui/requestDisplayMode' || data.type === 'ui/set_display_mode') {
+            console.debug('Handling MCP Apps request-display-mode:', data);
+            const mode = data.params?.mode || data.params?.displayMode || data.mode || data.displayMode || 'inline';
+            let matchingIframe = null;
+            try {
+                const iframes = Array.from(document.querySelectorAll('.mcp-app-iframe'));
+                matchingIframe = iframes.find(f => {
+                    try {
+                        return f.contentWindow === event.source;
+                    } catch {
+                        return false;
+                    }
+                });
+            } catch {
+                matchingIframe = null;
+            }
+            if (!matchingIframe) {
+                matchingIframe = document.querySelector('.mcp-app-iframe');
+            }
+            const mcpContainer = matchingIframe?.closest('.mcp-app-container') || document.querySelector('.mcp-app-container');
+
+            setAppDisplayMode(mcpContainer, matchingIframe, mode);
+
+            if (data.id && event.source) {
+                event.source.postMessage({
+                    jsonrpc: '2.0',
+                    id: data.id,
+                    result: { mode: mode }
+                }, '*');
+            }
+            event.source?.postMessage({
+                jsonrpc: '2.0',
+                method: 'ui/notifications/host-context-changed',
+                params: { displayMode: mode }
+            }, '*');
+        } else if (data.method === 'ui/open-link' || data.method === 'open-link' || data.type === 'ui/openUrl' || data.type === 'open_link' || data.action === 'open_link') {
+            const targetUrl = data.params?.url || data.payload?.url || data.url;
+            if (targetUrl && typeof targetUrl === 'string') {
+                try {
+                    const parsed = new URL(targetUrl, window.location.href);
+                    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+                        console.debug('Opening external link requested by MCP App:', parsed.href);
+                        window.open(parsed.href, '_blank', 'noopener,noreferrer');
+                        if (data.id && event.source) {
+                            event.source.postMessage({
+                                jsonrpc: '2.0',
+                                id: data.id,
+                                result: { success: true }
+                            }, '*');
+                        }
+                    } else {
+                        console.warn('Blocked opening non-http/https URL from MCP App:', targetUrl);
+                    }
+                } catch (e) {
+                    console.error('Invalid URL requested by MCP App:', targetUrl, e);
+                }
+            }
+        } else if (data.method === 'ping' || data.method === 'ui/ping') {
+            if (data.id && event.source) {
+                event.source.postMessage({
+                    jsonrpc: '2.0',
+                    id: data.id,
+                    result: {}
+                }, '*');
+            }
+        } else if (data.id && event.source) {
+            // General fallback response for any unanswered request to avoid timeout
+            console.debug('Acknowledging unhandled MCP Apps request to prevent timeout:', data.method || data.type, data.id);
+            event.source.postMessage({
+                jsonrpc: '2.0',
+                id: data.id,
+                result: {}
+            }, '*');
+        }
+    }
+});
+
+// Support exiting fullscreen with Escape key
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        const fullscreenContainer = document.querySelector('.mcp-app-container.mcp-app-fullscreen') || document.querySelector('.mcp-app-container');
+        if (fullscreenContainer && (fullscreenContainer.classList.contains('mcp-app-fullscreen') || fullscreenContainer.style.position === 'fixed')) {
+            const iframe = fullscreenContainer.querySelector('.mcp-app-iframe');
+            setAppDisplayMode(fullscreenContainer, iframe, 'inline');
+            if (iframe && iframe.contentWindow) {
+                iframe.contentWindow.postMessage({
+                    jsonrpc: '2.0',
+                    method: 'ui/notifications/host-context-changed',
+                    params: { displayMode: 'inline' }
+                }, '*');
+            }
+        }
+    }
+});
 
 /**
  * Checks if a specific parameter is marked as included for a given tool.

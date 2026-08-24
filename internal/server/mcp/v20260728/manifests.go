@@ -15,6 +15,8 @@
 package v20260728
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/googleapis/mcp-toolbox/internal/group"
@@ -26,7 +28,7 @@ import (
 )
 
 // generateToolManifest generates Tool for list tools result
-func generateToolManifest(name, desc string, authInvoke []string, params parameters.Parameters, annotations *tools.ToolAnnotations, urlParams map[string]string) Tool {
+func generateToolManifest(name, desc string, authInvoke []string, params parameters.Parameters, annotations *tools.ToolAnnotations, ui *tools.ToolUIMeta, urlParams map[string]string) Tool {
 	inputSchema, authParams := generateParamManifest(params, urlParams)
 	var toolAnnotations *ToolAnnotations
 	if annotations != nil {
@@ -51,6 +53,16 @@ func generateToolManifest(name, desc string, authInvoke []string, params paramet
 	}
 	if len(authParams) > 0 {
 		metadata["com.google.cloud/authParam"] = authParams
+	}
+	if ui != nil && ui.ResourceURI != "" {
+		uiMap := map[string]any{
+			"resourceUri": ui.ResourceURI,
+		}
+		if len(ui.Visibility) > 0 {
+			uiMap["visibility"] = ui.Visibility
+		}
+		metadata["ui"] = uiMap
+		metadata["ui/resourceUri"] = ui.ResourceURI
 	}
 	if len(metadata) > 0 {
 		mcpManifest.Metadata = metadata
@@ -119,7 +131,7 @@ func GenerateListToolsResult(pMgr *primitives.PrimitiveManager, g group.Group, u
 		if err != nil {
 			return ListToolsResult{}, fmt.Errorf("error getting parameters for tool %q: %w", toolName, err)
 		}
-		toolManifest := generateToolManifest(toolName, tool.GetDescription(), tool.GetAuthRequired(), params, tool.GetAnnotations(), urlParams)
+		toolManifest := generateToolManifest(toolName, tool.GetDescription(), tool.GetAuthRequired(), params, tool.GetAnnotations(), tool.GetUIMeta(), urlParams)
 		mcpManifest = append(mcpManifest, toolManifest)
 	}
 	res := ListToolsResult{
@@ -192,5 +204,57 @@ func GenerateGetGroupResult(pMgr *primitives.PrimitiveManager, g group.Group, ur
 		Name:    g.Name,
 		Tools:   listToolsResult.Tools,
 		Prompts: listPromptsResult.Prompts,
+	}, nil
+}
+
+// GenerateListResourcesResult generates the resources/list result according to mcp schema
+func GenerateListResourcesResult(pMgr *primitives.PrimitiveManager, g group.Group) (ListResourcesResult, error) {
+	groupResources := pMgr.GetResourcesForGroup(g)
+	mcpResources := make([]Resource, 0, len(groupResources))
+	for _, res := range groupResources {
+		var metaMap map[string]any
+		if meta := res.GetMeta(); meta != nil {
+			metaBytes, err := json.Marshal(meta)
+			if err == nil {
+				_ = json.Unmarshal(metaBytes, &metaMap)
+			}
+		}
+		mcpRes := Resource{
+			BaseMetadata: BaseMetadata{Name: res.GetName()},
+			URI:          res.GetURI(),
+			Description:  res.GetDescription(),
+			MIMEType:     res.GetMIMEType(),
+			Metadata:     metaMap,
+		}
+		mcpResources = append(mcpResources, mcpRes)
+	}
+	res := ListResourcesResult{
+		Resources: mcpResources,
+		Result: Result{
+			ResultType: resultTypeComplete,
+		},
+		CacheableResult: CacheableResult{
+			TtlMs:      g.GetTTLMs(),
+			CacheScope: cacheScope(g.GetCacheScope()),
+		},
+	}
+	return res, nil
+}
+
+// GenerateReadResourceResult generates the resources/read result according to mcp schema
+func GenerateReadResourceResult(ctx context.Context, pMgr *primitives.PrimitiveManager, uri string) (ReadResourceResult, error) {
+	res, ok := pMgr.GetResource(uri)
+	if !ok {
+		return ReadResourceResult{}, fmt.Errorf("resource with uri %q does not exist", uri)
+	}
+	content, err := res.Read(ctx)
+	if err != nil {
+		return ReadResourceResult{}, fmt.Errorf("error reading resource %q: %w", uri, err)
+	}
+	return ReadResourceResult{
+		Result: Result{
+			ResultType: resultTypeComplete,
+		},
+		Contents: []any{content},
 	}, nil
 }

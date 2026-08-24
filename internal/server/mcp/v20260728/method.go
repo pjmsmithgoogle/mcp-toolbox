@@ -51,6 +51,14 @@ func ProcessMethod(ctx context.Context, id jsonrpc.RequestId, method string, g g
 		return promptsListHandler(ctx, id, primitiveMgr, g, body, header)
 	case PROMPTS_GET:
 		return promptsGetHandler(ctx, id, g, primitiveMgr, body, header)
+	case RESOURCES_LIST:
+		return resourcesListHandler(ctx, id, primitiveMgr, g, body, header)
+	case RESOURCES_READ:
+		return resourcesReadHandler(ctx, id, primitiveMgr, body, header)
+	case GROUPS_LIST:
+		return groupsListHandler(ctx, id, primitiveMgr, body, header)
+	case GROUPS_GET:
+		return groupsGetHandler(ctx, id, primitiveMgr, body, header)
 	default:
 		err := fmt.Errorf("invalid method %s", method)
 		return jsonrpc.NewError(id, jsonrpc.METHOD_NOT_FOUND, err.Error(), nil), err
@@ -838,5 +846,88 @@ func groupsGetHandler(ctx context.Context, id jsonrpc.RequestId, primitiveMgr *p
 		Jsonrpc: jsonrpc.JSONRPC_VERSION,
 		Id:      id,
 		Result:  result,
+	}, nil
+}
+
+// resourcesListHandler handles the "resources/list" method.
+func resourcesListHandler(ctx context.Context, id jsonrpc.RequestId, primitiveMgr *primitives.PrimitiveManager, g group.Group, body []byte, header http.Header) (any, error) {
+	logger, err := util.LoggerFromContext(ctx)
+	if err != nil {
+		return jsonrpc.NewError(id, jsonrpc.INTERNAL_ERROR, err.Error(), nil), err
+	}
+	logger.DebugContext(ctx, "handling resources/list request")
+
+	var req ListResourcesRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		err = fmt.Errorf("invalid mcp resources list request: %w", err)
+		return jsonrpc.NewError(id, jsonrpc.INVALID_REQUEST, err.Error(), nil), err
+	}
+	validateHeaderErr, err := validateHeader(id, header, RESOURCES_LIST, "")
+	if err != nil {
+		return validateHeaderErr, err
+	}
+	validateErr, err := validateMetadata(id, req.Params.RequestParams, header == nil)
+	if err != nil {
+		return validateErr, err
+	}
+
+	listResourcesResult, err := GenerateListResourcesResult(primitiveMgr, g)
+	if err != nil {
+		err = fmt.Errorf("error generating resources list: %w", err)
+		return jsonrpc.NewError(id, jsonrpc.INTERNAL_ERROR, err.Error(), nil), err
+	}
+	logger.DebugContext(ctx, fmt.Sprintf("returning %d resources", len(listResourcesResult.Resources)))
+	meta, err := getResultMetadata(ctx, listResourcesResult.Meta)
+	if err != nil {
+		return jsonrpc.NewError(id, jsonrpc.INTERNAL_ERROR, err.Error(), nil), err
+	}
+	listResourcesResult.Meta = meta
+	return jsonrpc.JSONRPCResponse{
+		Jsonrpc: jsonrpc.JSONRPC_VERSION,
+		Id:      id,
+		Result:  listResourcesResult,
+	}, nil
+}
+
+// resourcesReadHandler handles the "resources/read" method.
+func resourcesReadHandler(ctx context.Context, id jsonrpc.RequestId, primitiveMgr *primitives.PrimitiveManager, body []byte, header http.Header) (any, error) {
+	logger, err := util.LoggerFromContext(ctx)
+	if err != nil {
+		return jsonrpc.NewError(id, jsonrpc.INTERNAL_ERROR, err.Error(), nil), err
+	}
+	logger.DebugContext(ctx, "handling resources/read request")
+
+	var req ReadResourceRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		err = fmt.Errorf("invalid mcp resources/read request: %w", err)
+		return jsonrpc.NewError(id, jsonrpc.INVALID_REQUEST, err.Error(), nil), err
+	}
+	validateHeaderErr, err := validateHeader(id, header, RESOURCES_READ, "")
+	if err != nil {
+		return validateHeaderErr, err
+	}
+	validateErr, err := validateMetadata(id, req.Params.RequestParams, header == nil)
+	if err != nil {
+		return validateErr, err
+	}
+
+	if req.Params.URI == "" {
+		err := fmt.Errorf("missing uri parameter in resources/read request")
+		return jsonrpc.NewError(id, jsonrpc.INVALID_PARAMS, err.Error(), nil), err
+	}
+
+	readResourceResult, err := GenerateReadResourceResult(ctx, primitiveMgr, req.Params.URI)
+	if err != nil {
+		return jsonrpc.NewError(id, jsonrpc.INVALID_PARAMS, err.Error(), nil), err
+	}
+	meta, err := getResultMetadata(ctx, readResourceResult.Meta)
+	if err != nil {
+		return jsonrpc.NewError(id, jsonrpc.INTERNAL_ERROR, err.Error(), nil), err
+	}
+	readResourceResult.Meta = meta
+	return jsonrpc.JSONRPCResponse{
+		Jsonrpc: jsonrpc.JSONRPC_VERSION,
+		Id:      id,
+		Result:  readResourceResult,
 	}, nil
 }

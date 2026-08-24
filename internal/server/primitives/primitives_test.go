@@ -22,6 +22,7 @@ import (
 	"github.com/googleapis/mcp-toolbox/internal/embeddingmodels"
 	"github.com/googleapis/mcp-toolbox/internal/group"
 	"github.com/googleapis/mcp-toolbox/internal/prompts"
+	"github.com/googleapis/mcp-toolbox/internal/resources"
 	"github.com/googleapis/mcp-toolbox/internal/server/primitives"
 	"github.com/googleapis/mcp-toolbox/internal/sources"
 	"github.com/googleapis/mcp-toolbox/internal/sources/alloydbpg"
@@ -89,5 +90,22 @@ func TestUpdateServer(t *testing.T) {
 	gotSource, _ = resMgr.GetSource("example-source2")
 	if diff := cmp.Diff(gotSource, updateSource["example-source2"]); diff != "" {
 		t.Errorf("error updating server, sources (-want +got):\n%s", diff)
+	}
+
+	// Test resource registration and lookup
+	res := resources.NewUIResource("ui://test/res", "Test Res", "Desc", "<html></html>", nil, nil)
+	resMgr.RegisterResource(res)
+
+	gotRes, ok := resMgr.GetResource("ui://test/res")
+	if !ok {
+		t.Fatalf("expected resource \"ui://test/res\" to exist")
+	}
+	if diff := cmp.Diff("ui://test/res", gotRes.GetURI()); diff != "" {
+		t.Errorf("GetResource URI (-want +got):\n%s", diff)
+	}
+
+	allResources := resMgr.ListResources()
+	if len(allResources) != 1 {
+		t.Errorf("ListResources() expected 1 resource, got %d", len(allResources))
 	}
 }

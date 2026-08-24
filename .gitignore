@@ -1,5 +1,8 @@
-# direnv
+# direnv & dotenv
 .envrc
+.env
+.env.local
+.env.*.local
 
 # vscode
 .vscode/
@@ -26,4 +29,5 @@ __pycache__/
 mcp-toolbox
 toolbox
 toolbox.exe
+toolbox-bin
 **/test.db

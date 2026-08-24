@@ -23,6 +23,7 @@ import (
 
 	"github.com/googleapis/mcp-toolbox/internal/group"
 	"github.com/googleapis/mcp-toolbox/internal/log"
+	"github.com/googleapis/mcp-toolbox/internal/resources"
 	"github.com/googleapis/mcp-toolbox/internal/server/mcp/jsonrpc"
 	"github.com/googleapis/mcp-toolbox/internal/server/primitives"
 	"github.com/googleapis/mcp-toolbox/internal/testutils"
@@ -640,5 +641,98 @@ func TestPromptsGetHandler(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestResourcesListHandler(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	testLogger, err := log.NewStdLogger(os.Stdout, os.Stderr, "info")
+	if err != nil {
+		t.Fatalf("unable to initialize logger: %s", err)
+	}
+	ctx = util.WithLogger(ctx, testLogger)
+
+	mockTools := []testutils.MockTool{testutils.MockTool1, testutils.MockTool2}
+	toolsMap, promptsMap, groups := testutils.SetUpResources(t, mockTools, nil)
+	primitiveMgr := primitives.NewPrimitiveManager(nil, nil, nil, toolsMap, promptsMap, groups)
+	res := resources.NewUIResource("ui://test/res.html", "Test UI", "Description", "<div>Test</div>", nil, nil)
+	primitiveMgr.RegisterResource(res)
+
+	body, err := json.Marshal(ListResourcesRequest{
+		Request: jsonrpc.Request{Method: "resources/list"},
+	})
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+
+	got, err := resourcesListHandler(ctx, dummyID, primitiveMgr, mustGroup(t, primitiveMgr), body)
+	if err != nil {
+		t.Fatalf("resourcesListHandler failed: %v", err)
+	}
+	resp, ok := got.(jsonrpc.JSONRPCResponse)
+	if !ok {
+		t.Fatalf("expected JSONRPCResponse, got %T", got)
+	}
+	result, ok := resp.Result.(ListResourcesResult)
+	if !ok {
+		t.Fatalf("expected ListResourcesResult, got %T", resp.Result)
+	}
+	if len(result.Resources) != 1 {
+		t.Errorf("expected 1 resource, got %d", len(result.Resources))
+	}
+	if result.Resources[0].URI != "ui://test/res.html" {
+		t.Errorf("expected uri ui://test/res.html, got %s", result.Resources[0].URI)
+	}
+}
+
+func TestResourcesReadHandler(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	testLogger, err := log.NewStdLogger(os.Stdout, os.Stderr, "info")
+	if err != nil {
+		t.Fatalf("unable to initialize logger: %s", err)
+	}
+	ctx = util.WithLogger(ctx, testLogger)
+
+	mockTools := []testutils.MockTool{testutils.MockTool1, testutils.MockTool2}
+	toolsMap, promptsMap, groups := testutils.SetUpResources(t, mockTools, nil)
+	primitiveMgr := primitives.NewPrimitiveManager(nil, nil, nil, toolsMap, promptsMap, groups)
+	res := resources.NewUIResource("ui://test/res.html", "Test UI", "Description", "<div>Test</div>", nil, nil)
+	primitiveMgr.RegisterResource(res)
+
+	// Valid read
+	body, err := json.Marshal(ReadResourceRequest{
+		Request: jsonrpc.Request{Method: "resources/read"},
+		Params:  ReadResourceParams{URI: "ui://test/res.html"},
+	})
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+
+	got, err := resourcesReadHandler(ctx, dummyID, primitiveMgr, body)
+	if err != nil {
+		t.Fatalf("resourcesReadHandler failed: %v", err)
+	}
+	resp, ok := got.(jsonrpc.JSONRPCResponse)
+	if !ok {
+		t.Fatalf("expected JSONRPCResponse, got %T", got)
+	}
+	result, ok := resp.Result.(ReadResourceResult)
+	if !ok {
+		t.Fatalf("expected ReadResourceResult, got %T", resp.Result)
+	}
+	if len(result.Contents) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(result.Contents))
+	}
+
+	// Non-existent read
+	notFoundBody, _ := json.Marshal(ReadResourceRequest{
+		Request: jsonrpc.Request{Method: "resources/read"},
+		Params:  ReadResourceParams{URI: "ui://non-existent"},
+	})
+	_, err = resourcesReadHandler(ctx, dummyID, primitiveMgr, notFoundBody)
+	if err == nil {
+		t.Errorf("expected error for non-existent resource, got nil")
 	}
 }

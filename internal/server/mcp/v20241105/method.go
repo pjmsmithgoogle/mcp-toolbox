@@ -53,6 +53,10 @@ func ProcessMethod(ctx context.Context, id jsonrpc.RequestId, method string, g g
 		return promptsListHandler(ctx, id, primitiveMgr, g, body)
 	case PROMPTS_GET:
 		return promptsGetHandler(ctx, id, g, primitiveMgr, body)
+	case RESOURCES_LIST:
+		return resourcesListHandler(ctx, id, primitiveMgr, g, body)
+	case RESOURCES_READ:
+		return resourcesReadHandler(ctx, id, primitiveMgr, body)
 	default:
 		err := fmt.Errorf("invalid method %s", method)
 		return jsonrpc.NewError(id, jsonrpc.METHOD_NOT_FOUND, err.Error(), nil), err
@@ -76,6 +80,7 @@ func initializeHandler(ctx context.Context, id jsonrpc.RequestId, body []byte) (
 
 	toolsListChanged := false
 	promptsListChanged := false
+	resourcesListChanged := false
 	result := InitializeResult{
 		ProtocolVersion: PROTOCOL_VERSION,
 		Capabilities: ServerCapabilities{
@@ -84,6 +89,12 @@ func initializeHandler(ctx context.Context, id jsonrpc.RequestId, body []byte) (
 			},
 			Prompts: &ListChanged{
 				ListChanged: &promptsListChanged,
+			},
+			Resources: &ResourceCapabilities{
+				ListChanged: &resourcesListChanged,
+			},
+			Extensions: map[string]any{
+				"io.modelcontextprotocol/ui": map[string]any{},
 			},
 		},
 		ServerInfo: Implementation{
@@ -551,5 +562,62 @@ func promptsGetHandler(ctx context.Context, id jsonrpc.RequestId, g group.Group,
 		Jsonrpc: jsonrpc.JSONRPC_VERSION,
 		Id:      id,
 		Result:  result,
+	}, nil
+}
+
+// resourcesListHandler handles the "resources/list" method.
+func resourcesListHandler(ctx context.Context, id jsonrpc.RequestId, primitiveMgr *primitives.PrimitiveManager, g group.Group, body []byte) (any, error) {
+	logger, err := util.LoggerFromContext(ctx)
+	if err != nil {
+		return jsonrpc.NewError(id, jsonrpc.INTERNAL_ERROR, err.Error(), nil), err
+	}
+	logger.DebugContext(ctx, "handling resources/list request")
+
+	var req ListResourcesRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		err = fmt.Errorf("invalid mcp resources list request: %w", err)
+		return jsonrpc.NewError(id, jsonrpc.INVALID_REQUEST, err.Error(), nil), err
+	}
+
+	listResourcesResult, err := GenerateListResourcesResult(primitiveMgr, g)
+	if err != nil {
+		err = fmt.Errorf("error generating resources list: %w", err)
+		return jsonrpc.NewError(id, jsonrpc.INTERNAL_ERROR, err.Error(), nil), err
+	}
+	logger.DebugContext(ctx, fmt.Sprintf("returning %d resources", len(listResourcesResult.Resources)))
+	return jsonrpc.JSONRPCResponse{
+		Jsonrpc: jsonrpc.JSONRPC_VERSION,
+		Id:      id,
+		Result:  listResourcesResult,
+	}, nil
+}
+
+// resourcesReadHandler handles the "resources/read" method.
+func resourcesReadHandler(ctx context.Context, id jsonrpc.RequestId, primitiveMgr *primitives.PrimitiveManager, body []byte) (any, error) {
+	logger, err := util.LoggerFromContext(ctx)
+	if err != nil {
+		return jsonrpc.NewError(id, jsonrpc.INTERNAL_ERROR, err.Error(), nil), err
+	}
+	logger.DebugContext(ctx, "handling resources/read request")
+
+	var req ReadResourceRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		err = fmt.Errorf("invalid mcp resources/read request: %w", err)
+		return jsonrpc.NewError(id, jsonrpc.INVALID_REQUEST, err.Error(), nil), err
+	}
+
+	if req.Params.URI == "" {
+		err := fmt.Errorf("missing uri parameter in resources/read request")
+		return jsonrpc.NewError(id, jsonrpc.INVALID_PARAMS, err.Error(), nil), err
+	}
+
+	readResourceResult, err := GenerateReadResourceResult(ctx, primitiveMgr, req.Params.URI)
+	if err != nil {
+		return jsonrpc.NewError(id, jsonrpc.INVALID_PARAMS, err.Error(), nil), err
+	}
+	return jsonrpc.JSONRPCResponse{
+		Jsonrpc: jsonrpc.JSONRPC_VERSION,
+		Id:      id,
+		Result:  readResourceResult,
 	}, nil
 }

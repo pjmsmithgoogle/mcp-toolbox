@@ -23,6 +23,7 @@ import (
 	"github.com/googleapis/mcp-toolbox/internal/embeddingmodels"
 	"github.com/googleapis/mcp-toolbox/internal/group"
 	"github.com/googleapis/mcp-toolbox/internal/prompts"
+	"github.com/googleapis/mcp-toolbox/internal/resources"
 	"github.com/googleapis/mcp-toolbox/internal/sources"
 	"github.com/googleapis/mcp-toolbox/internal/tools"
 )
@@ -37,6 +38,7 @@ type PrimitiveManager struct {
 	embeddingModels map[string]embeddingmodels.EmbeddingModel
 	tools           map[string]tools.Tool
 	prompts         map[string]prompts.Prompt
+	resources       map[string]resources.Resource
 	groups          map[string]group.Group
 }
 
@@ -47,8 +49,19 @@ func NewPrimitiveManager(
 	toolsMap map[string]tools.Tool,
 	promptsMap map[string]prompts.Prompt,
 	groupsMap map[string]group.Group,
-
 ) *PrimitiveManager {
+	resourcesMap := make(map[string]resources.Resource)
+	// Discover resources from tools implementing resources.ResourceProvider
+	for _, t := range toolsMap {
+		if rp, ok := t.(resources.ResourceProvider); ok {
+			for _, res := range rp.GetResources() {
+				if res != nil && res.GetURI() != "" {
+					resourcesMap[res.GetURI()] = res
+				}
+			}
+		}
+	}
+
 	primitiveMgr := &PrimitiveManager{
 		mu:              sync.RWMutex{},
 		sources:         sourcesMap,
@@ -56,6 +69,7 @@ func NewPrimitiveManager(
 		embeddingModels: embeddingModelsMap,
 		tools:           toolsMap,
 		prompts:         promptsMap,
+		resources:       resourcesMap,
 		groups:          groupsMap,
 	}
 
@@ -97,6 +111,77 @@ func (r *PrimitiveManager) GetPrompt(promptName string) (prompts.Prompt, bool) {
 	return prompt, ok
 }
 
+func (r *PrimitiveManager) GetResource(uri string) (resources.Resource, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	res, ok := r.resources[uri]
+	return res, ok
+}
+
+// GetResourcesForGroup returns the resources available for a given group.
+// If the group is the default group (Name == "") or has no specific tools, all resources are returned.
+// Otherwise, resources associated with the group's tools are returned.
+func (r *PrimitiveManager) GetResourcesForGroup(g group.Group) []resources.Resource {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	resMap := make(map[string]resources.Resource)
+	if g.Name == "" || len(g.ToolNames) == 0 {
+		for _, res := range r.resources {
+			resMap[res.GetURI()] = res
+		}
+	} else {
+		for _, toolName := range g.ToolNames {
+			if t, ok := r.tools[toolName]; ok {
+				if rp, ok := t.(resources.ResourceProvider); ok {
+					for _, res := range rp.GetResources() {
+						if res != nil {
+							resMap[res.GetURI()] = res
+						}
+					}
+				}
+				if ui := t.GetUIMeta(); ui != nil && ui.ResourceURI != "" {
+					if res, ok := r.resources[ui.ResourceURI]; ok {
+						resMap[res.GetURI()] = res
+					}
+				}
+			}
+		}
+	}
+
+	result := make([]resources.Resource, 0, len(resMap))
+	for _, res := range resMap {
+		result = append(result, res)
+	}
+	slices.SortFunc(result, func(a, b resources.Resource) int {
+		return cmp.Compare(a.GetURI(), b.GetURI())
+	})
+	return result
+}
+
+// ListResources returns all resources sorted alphabetically by URI.
+func (r *PrimitiveManager) ListResources() []resources.Resource {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	list := make([]resources.Resource, 0, len(r.resources))
+	for _, res := range r.resources {
+		list = append(list, res)
+	}
+	slices.SortFunc(list, func(a, b resources.Resource) int {
+		return cmp.Compare(a.GetURI(), b.GetURI())
+	})
+	return list
+}
+
+func (r *PrimitiveManager) RegisterResource(res resources.Resource) {
+	if res == nil || res.GetURI() == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.resources[res.GetURI()] = res
+}
+
 // GetGroup returns the group of the given name.
 func (r *PrimitiveManager) GetGroup(groupName string) (group.Group, bool) {
 	r.mu.RLock()
@@ -114,6 +199,18 @@ func (r *PrimitiveManager) SetPrimitives(sourcesMap map[string]sources.Source, a
 	r.tools = toolsMap
 	r.prompts = promptsMap
 	r.groups = groupsMap
+
+	resourcesMap := make(map[string]resources.Resource)
+	for _, t := range toolsMap {
+		if rp, ok := t.(resources.ResourceProvider); ok {
+			for _, res := range rp.GetResources() {
+				if res != nil && res.GetURI() != "" {
+					resourcesMap[res.GetURI()] = res
+				}
+			}
+		}
+	}
+	r.resources = resourcesMap
 }
 
 func (r *PrimitiveManager) GetAuthServiceMap() map[string]auth.AuthService {

@@ -498,8 +498,10 @@ func TestMcpEndpoint(t *testing.T) {
 				"result": map[string]any{
 					"protocolVersion": "2024-11-05",
 					"capabilities": map[string]any{
-						"tools":   map[string]any{"listChanged": false},
-						"prompts": map[string]any{"listChanged": false},
+						"tools":      map[string]any{"listChanged": false},
+						"prompts":    map[string]any{"listChanged": false},
+						"resources":  map[string]any{"listChanged": false},
+						"extensions": map[string]any{"io.modelcontextprotocol/ui": map[string]any{}},
 					},
 					"serverInfo": map[string]any{"name": serverName, "version": testutils.MockVersionString},
 				},
@@ -517,8 +519,10 @@ func TestMcpEndpoint(t *testing.T) {
 				"result": map[string]any{
 					"protocolVersion": "2025-03-26",
 					"capabilities": map[string]any{
-						"tools":   map[string]any{"listChanged": false},
-						"prompts": map[string]any{"listChanged": false},
+						"tools":      map[string]any{"listChanged": false},
+						"prompts":    map[string]any{"listChanged": false},
+						"resources":  map[string]any{"listChanged": false},
+						"extensions": map[string]any{"io.modelcontextprotocol/ui": map[string]any{}},
 					},
 					"serverInfo": map[string]any{"name": serverName, "version": testutils.MockVersionString},
 				},
@@ -536,8 +540,10 @@ func TestMcpEndpoint(t *testing.T) {
 				"result": map[string]any{
 					"protocolVersion": "2025-06-18",
 					"capabilities": map[string]any{
-						"tools":   map[string]any{"listChanged": false},
-						"prompts": map[string]any{"listChanged": false},
+						"tools":      map[string]any{"listChanged": false},
+						"prompts":    map[string]any{"listChanged": false},
+						"resources":  map[string]any{"listChanged": false},
+						"extensions": map[string]any{"io.modelcontextprotocol/ui": map[string]any{}},
 					},
 					"serverInfo": map[string]any{"name": serverName, "version": testutils.MockVersionString},
 				},
@@ -555,8 +561,10 @@ func TestMcpEndpoint(t *testing.T) {
 				"result": map[string]any{
 					"protocolVersion": "2025-11-25",
 					"capabilities": map[string]any{
-						"tools":   map[string]any{"listChanged": false},
-						"prompts": map[string]any{"listChanged": false},
+						"tools":      map[string]any{"listChanged": false},
+						"prompts":    map[string]any{"listChanged": false},
+						"resources":  map[string]any{"listChanged": false},
+						"extensions": map[string]any{"io.modelcontextprotocol/ui": map[string]any{}},
 					},
 					"serverInfo": map[string]any{"name": serverName, "version": testutils.MockVersionString},
 				},

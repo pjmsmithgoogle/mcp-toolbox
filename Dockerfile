@@ -11,10 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-FROM --platform=$BUILDPLATFORM golang:1 AS build
+FROM golang:1 AS build
 
 # Install Zig for CGO cross-compilation
-RUN apt-get update && apt-get install -y xz-utils
+RUN apt-get update && apt-get install -y curl xz-utils
 RUN curl -fL "https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz" -o zig.tar.xz && \
     mkdir -p /zig && \
     tar -xf zig.tar.xz -C /zig --strip-components=1 && \
@@ -23,8 +23,8 @@ RUN curl -fL "https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz
 WORKDIR /go/src/mcp-toolbox
 COPY . .
 
-ARG TARGETOS
-ARG TARGETARCH
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
 ARG BUILD_TYPE="container.dev"
 ARG COMMIT_SHA=""
 

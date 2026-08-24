@@ -28,12 +28,14 @@ const PROTOCOL_VERSION = mcputil.VERSION_20241105
 
 // methods that are supported.
 const (
-	INITIALIZE   = "initialize"
-	PING         = "ping"
-	TOOLS_LIST   = "tools/list"
-	TOOLS_CALL   = "tools/call"
-	PROMPTS_LIST = "prompts/list"
-	PROMPTS_GET  = "prompts/get"
+	INITIALIZE     = "initialize"
+	PING           = "ping"
+	TOOLS_LIST     = "tools/list"
+	TOOLS_CALL     = "tools/call"
+	PROMPTS_LIST   = "prompts/list"
+	PROMPTS_GET    = "prompts/get"
+	RESOURCES_LIST = "resources/list"
+	RESOURCES_READ = "resources/read"
 )
 
 /* Initialization */
@@ -83,6 +85,12 @@ type ListChanged struct {
 	ListChanged *bool `json:"listChanged,omitempty"`
 }
 
+// ResourceCapabilities represents capabilities for resources.
+type ResourceCapabilities struct {
+	Subscribe   *bool `json:"subscribe,omitempty"`
+	ListChanged *bool `json:"listChanged,omitempty"`
+}
+
 // ClientCapabilities represents capabilities a client may support. Known
 // capabilities are defined here, in this schema, but this is not a closed set: any
 // client can define its own, additional capabilities.
@@ -99,8 +107,44 @@ type ClientCapabilities struct {
 // capabilities are defined here, in this schema, but this is not a closed set: any
 // server can define its own, additional capabilities.
 type ServerCapabilities struct {
-	Tools   *ListChanged `json:"tools,omitempty"`
-	Prompts *ListChanged `json:"prompts,omitempty"`
+	Tools      *ListChanged          `json:"tools,omitempty"`
+	Prompts    *ListChanged          `json:"prompts,omitempty"`
+	Resources  *ResourceCapabilities `json:"resources,omitempty"`
+	Extensions map[string]any        `json:"extensions,omitempty"`
+}
+
+/* Resources */
+
+// Resource represents a resource in MCP.
+type Resource struct {
+	BaseMetadata
+	URI         string         `json:"uri"`
+	Description string         `json:"description,omitempty"`
+	MIMEType    string         `json:"mimeType,omitempty"`
+	Metadata    map[string]any `json:"_meta,omitempty"`
+}
+
+type ListResourcesRequest struct {
+	jsonrpc.Request
+}
+
+type ListResourcesResult struct {
+	jsonrpc.Result
+	Resources []Resource `json:"resources"`
+}
+
+type ReadResourceParams struct {
+	URI string `json:"uri"`
+}
+
+type ReadResourceRequest struct {
+	jsonrpc.Request
+	Params ReadResourceParams `json:"params"`
+}
+
+type ReadResourceResult struct {
+	jsonrpc.Result
+	Contents []any `json:"contents"`
 }
 
 // Base interface for metadata with name (identifier) and title (display name) properties.

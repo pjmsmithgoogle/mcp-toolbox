@@ -33,6 +33,8 @@ const (
 	TOOLS_CALL      = "tools/call"
 	PROMPTS_LIST    = "prompts/list"
 	PROMPTS_GET     = "prompts/get"
+	RESOURCES_LIST  = "resources/list"
+	RESOURCES_READ  = "resources/read"
 	GROUPS_LIST     = "groups/list"
 	GROUPS_GET      = "groups/get"
 )
@@ -183,18 +185,62 @@ type Implementation struct {
 	Version string `json:"version"`
 }
 
+// ResourceCapabilities represents capabilities for resources.
+type ResourceCapabilities struct {
+	Subscribe   *bool `json:"subscribe,omitempty"`
+	ListChanged *bool `json:"listChanged,omitempty"`
+}
+
 // ServerCapabilities represents capabilities that a server may support. Known
 // capabilities are defined here, in this schema, but this is not a closed set: any
 // server can define its own, additional capabilities.
 type ServerCapabilities struct {
-	Extensions map[string]any `json:"extensions,omitempty"`
-	Tools      *ListChanged   `json:"tools,omitempty"`
-	Prompts    *ListChanged   `json:"prompts,omitempty"`
+	Extensions map[string]any        `json:"extensions,omitempty"`
+	Tools      *ListChanged          `json:"tools,omitempty"`
+	Prompts    *ListChanged          `json:"prompts,omitempty"`
+	Resources  *ResourceCapabilities `json:"resources,omitempty"`
 }
 
 // ListChange represents whether the server supports notification for changes to the capabilities.
 type ListChanged struct {
 	ListChanged *bool `json:"listChanged,omitempty"`
+}
+
+/* Resources */
+
+// Resource represents a resource in MCP.
+type Resource struct {
+	BaseMetadata
+	URI         string         `json:"uri"`
+	Description string         `json:"description,omitempty"`
+	MIMEType    string         `json:"mimeType,omitempty"`
+	Metadata    map[string]any `json:"_meta,omitempty"`
+}
+
+type ListResourcesRequest struct {
+	PaginatedRequest
+}
+
+type ListResourcesResult struct {
+	Result
+	PaginatedResult
+	CacheableResult
+	Resources []Resource `json:"resources"`
+}
+
+type ReadResourceParams struct {
+	RequestParams
+	URI string `json:"uri"`
+}
+
+type ReadResourceRequest struct {
+	jsonrpc.Request
+	Params ReadResourceParams `json:"params"`
+}
+
+type ReadResourceResult struct {
+	Result
+	Contents []any `json:"contents"`
 }
 
 /* Empty result */

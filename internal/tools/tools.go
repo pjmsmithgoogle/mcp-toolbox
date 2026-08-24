@@ -23,6 +23,7 @@ import (
 
 	yaml "github.com/goccy/go-yaml"
 	"github.com/googleapis/mcp-toolbox/internal/embeddingmodels"
+	"github.com/googleapis/mcp-toolbox/internal/resources"
 	"github.com/googleapis/mcp-toolbox/internal/sources"
 	"github.com/googleapis/mcp-toolbox/internal/util"
 	"github.com/googleapis/mcp-toolbox/internal/util/parameters"
@@ -128,6 +129,7 @@ type Tool interface {
 	GetDescription() string
 	GetAuthRequired() []string
 	GetAnnotations() *ToolAnnotations
+	GetUIMeta() *ToolUIMeta
 	Invoke(context.Context, sources.Source, parameters.ParamValues, AccessToken) (any, util.ToolboxError)
 	EmbedParams(context.Context, parameters.ParamValues, PrimitiveManagerI) (parameters.ParamValues, error)
 	Manifest(sources.Source) (Manifest, error)
@@ -149,11 +151,20 @@ type PrimitiveManagerI interface {
 	GetEmbeddingModel(string) (embeddingmodels.EmbeddingModel, bool)
 }
 
+// ToolUIMeta specifies the MCP Apps UI metadata for a tool according to the MCP Apps specification.
+type ToolUIMeta struct {
+	ResourceURI string                      `json:"resourceUri,omitempty" yaml:"resource_uri,omitempty"`
+	RemoteURL   string                      `json:"remoteUrl,omitempty" yaml:"remote_url,omitempty"`
+	Visibility  []string                    `json:"visibility,omitempty" yaml:"visibility,omitempty"`
+	CSP         *resources.McpUiResourceCsp `json:"csp,omitempty" yaml:"csp,omitempty"`
+}
+
 // Manifest is the representation of tools sent to Client SDKs.
 type Manifest struct {
 	Description  string                         `json:"description"`
 	Parameters   []parameters.ParameterManifest `json:"parameters"`
 	AuthRequired []string                       `json:"authRequired"`
+	UI           *ToolUIMeta                    `json:"ui,omitempty"`
 }
 
 // Helper function that returns if a tool invocation request is authorized
@@ -177,6 +188,7 @@ type ToolMeta interface {
 	GetDescription() string
 	GetAuthRequired() []string
 	GetScopesRequired() []string
+	GetUIMeta() *ToolUIMeta
 }
 
 // ConfigBase owns the YAML fields that every tool's Config shares and that
@@ -185,16 +197,18 @@ type ToolMeta interface {
 // configs omit description: and rely on a canned per-tool string), so
 // post-Initialize ConfigBase.Description holds the resolved value.
 type ConfigBase struct {
-	Name           string   `yaml:"name"           validate:"required"`
-	Description    string   `yaml:"description"`
-	AuthRequired   []string `yaml:"authRequired"`
-	ScopesRequired []string `yaml:"scopesRequired"`
+	Name           string      `yaml:"name"           validate:"required"`
+	Description    string      `yaml:"description"`
+	AuthRequired   []string    `yaml:"authRequired"`
+	ScopesRequired []string    `yaml:"scopesRequired"`
+	UI             *ToolUIMeta `yaml:"ui,omitempty"`
 }
 
 func (c ConfigBase) GetName() string             { return c.Name }
 func (c ConfigBase) GetDescription() string      { return c.Description }
 func (c ConfigBase) GetAuthRequired() []string   { return c.AuthRequired }
 func (c ConfigBase) GetScopesRequired() []string { return c.ScopesRequired }
+func (c ConfigBase) GetUIMeta() *ToolUIMeta      { return c.UI }
 
 // BaseTool provides default implementations of various methods on the Tool
 // interface. Tools embed BaseTool to drop their boilerplate and override
@@ -210,6 +224,9 @@ type BaseTool[T ToolMeta] struct {
 // per-tool Config after Initialize has filled in defaults), the resolved
 // annotations, the precomputed Manifest, and the tool's static parameters.
 func NewBaseTool[T ToolMeta](cfg T, annotations *ToolAnnotations, metadata Manifest, staticParameters parameters.Parameters) BaseTool[T] {
+	if metadata.UI == nil && cfg.GetUIMeta() != nil {
+		metadata.UI = cfg.GetUIMeta()
+	}
 	return BaseTool[T]{
 		Cfg:              cfg,
 		annotations:      annotations,
@@ -223,6 +240,7 @@ func (b BaseTool[T]) GetDescription() string           { return b.Cfg.GetDescrip
 func (b BaseTool[T]) GetAuthRequired() []string        { return b.Cfg.GetAuthRequired() }
 func (b BaseTool[T]) GetScopesRequired() []string      { return b.Cfg.GetScopesRequired() }
 func (b BaseTool[T]) GetAnnotations() *ToolAnnotations { return b.annotations }
+func (b BaseTool[T]) GetUIMeta() *ToolUIMeta           { return b.Cfg.GetUIMeta() }
 
 // Manifest returns the precomputed metadata. It and GetParameters stay trivial
 // and never call each other: embedded methods have no virtual dispatch, so a

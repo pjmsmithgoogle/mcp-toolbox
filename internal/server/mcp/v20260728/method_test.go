@@ -25,6 +25,7 @@ import (
 
 	"github.com/googleapis/mcp-toolbox/internal/group"
 	"github.com/googleapis/mcp-toolbox/internal/log"
+	"github.com/googleapis/mcp-toolbox/internal/resources"
 	"github.com/googleapis/mcp-toolbox/internal/server/mcp/jsonrpc"
 	"github.com/googleapis/mcp-toolbox/internal/server/primitives"
 	"github.com/googleapis/mcp-toolbox/internal/testutils"
@@ -1335,5 +1336,146 @@ func TestGetResultMetadata(t *testing.T) {
 				t.Errorf("getResultMetadata() got =\n%v\nwant =\n%v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestResourcesListHandler(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	testLogger, err := log.NewStdLogger(os.Stdout, os.Stderr, "info")
+	if err != nil {
+		t.Fatalf("unable to initialize logger: %s", err)
+	}
+	ctx = util.WithLogger(ctx, testLogger)
+	ctx = util.WithToolboxVersionKey(ctx, fakeVersionString)
+
+	mockTools := []testutils.MockTool{testutils.MockTool1, testutils.MockTool2}
+	toolsMap, promptsMap, groups := testutils.SetUpResources(t, mockTools, nil)
+	primitiveMgr := primitives.NewPrimitiveManager(nil, nil, nil, toolsMap, promptsMap, groups)
+	res := resources.NewUIResource("ui://test/res.html", "Test UI", "Description", "<div>Test</div>", nil, nil)
+	primitiveMgr.RegisterResource(res)
+
+	body, err := json.Marshal(ListResourcesRequest{
+		PaginatedRequest: PaginatedRequest{
+			Request: jsonrpc.Request{Method: "resources/list"},
+			Params: PaginatedRequestParams{
+				RequestParams: RequestParams{
+					Meta: &RequestMetaObject{
+						ProtocolVersion: PROTOCOL_VERSION,
+						ClientInfo: Implementation{
+							BaseMetadata: BaseMetadata{Name: "test-client"},
+							Version:      "1.0.0",
+						},
+						MetaClientCapabilities: &ClientCapabilities{},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+
+	header := http.Header{}
+	header.Set("mcp-method", RESOURCES_LIST)
+	header.Set("mcp-name", "")
+
+	got, err := resourcesListHandler(ctx, dummyID, primitiveMgr, mustGroup(t, primitiveMgr), body, header)
+	if err != nil {
+		t.Fatalf("resourcesListHandler failed: %v", err)
+	}
+	resp, ok := got.(jsonrpc.JSONRPCResponse)
+	if !ok {
+		t.Fatalf("expected JSONRPCResponse, got %T", got)
+	}
+	result, ok := resp.Result.(ListResourcesResult)
+	if !ok {
+		t.Fatalf("expected ListResourcesResult, got %T", resp.Result)
+	}
+	if len(result.Resources) != 1 {
+		t.Errorf("expected 1 resource, got %d", len(result.Resources))
+	}
+	if result.Resources[0].URI != "ui://test/res.html" {
+		t.Errorf("expected uri ui://test/res.html, got %s", result.Resources[0].URI)
+	}
+}
+
+func TestResourcesReadHandler(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	testLogger, err := log.NewStdLogger(os.Stdout, os.Stderr, "info")
+	if err != nil {
+		t.Fatalf("unable to initialize logger: %s", err)
+	}
+	ctx = util.WithLogger(ctx, testLogger)
+	ctx = util.WithToolboxVersionKey(ctx, fakeVersionString)
+
+	mockTools := []testutils.MockTool{testutils.MockTool1, testutils.MockTool2}
+	toolsMap, promptsMap, groups := testutils.SetUpResources(t, mockTools, nil)
+	primitiveMgr := primitives.NewPrimitiveManager(nil, nil, nil, toolsMap, promptsMap, groups)
+	res := resources.NewUIResource("ui://test/res.html", "Test UI", "Description", "<div>Test</div>", nil, nil)
+	primitiveMgr.RegisterResource(res)
+
+	// Valid read
+	body, err := json.Marshal(ReadResourceRequest{
+		Request: jsonrpc.Request{Method: "resources/read"},
+		Params: ReadResourceParams{
+			RequestParams: RequestParams{
+				Meta: &RequestMetaObject{
+					ProtocolVersion: PROTOCOL_VERSION,
+					ClientInfo: Implementation{
+						BaseMetadata: BaseMetadata{Name: "test-client"},
+						Version:      "1.0.0",
+					},
+					MetaClientCapabilities: &ClientCapabilities{},
+				},
+			},
+			URI: "ui://test/res.html",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+
+	header := http.Header{}
+	header.Set("mcp-method", RESOURCES_READ)
+	header.Set("mcp-name", "")
+
+	got, err := resourcesReadHandler(ctx, dummyID, primitiveMgr, body, header)
+	if err != nil {
+		t.Fatalf("resourcesReadHandler failed: %v", err)
+	}
+	resp, ok := got.(jsonrpc.JSONRPCResponse)
+	if !ok {
+		t.Fatalf("expected JSONRPCResponse, got %T", got)
+	}
+	result, ok := resp.Result.(ReadResourceResult)
+	if !ok {
+		t.Fatalf("expected ReadResourceResult, got %T", resp.Result)
+	}
+	if len(result.Contents) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(result.Contents))
+	}
+
+	// Non-existent read
+	notFoundBody, _ := json.Marshal(ReadResourceRequest{
+		Request: jsonrpc.Request{Method: "resources/read"},
+		Params: ReadResourceParams{
+			RequestParams: RequestParams{
+				Meta: &RequestMetaObject{
+					ProtocolVersion: PROTOCOL_VERSION,
+					ClientInfo: Implementation{
+						BaseMetadata: BaseMetadata{Name: "test-client"},
+						Version:      "1.0.0",
+					},
+					MetaClientCapabilities: &ClientCapabilities{},
+				},
+			},
+			URI: "ui://non-existent",
+		},
+	})
+	_, err = resourcesReadHandler(ctx, dummyID, primitiveMgr, notFoundBody, header)
+	if err == nil {
+		t.Errorf("expected error for non-existent resource, got nil")
 	}
 }

@@ -1012,7 +1012,7 @@ func getResourceOrTemplateByURI(uri string, g group.Group, primitiveMgr *primiti
 
 	// UI resources and templates are globally accessible and not limited to specific groups.
 	for _, res := range primitiveMgr.GetUIResources() {
-		if res.GetURI() == uri {
+		if res.GetURI() == uri || strings.TrimSuffix(res.GetURI(), ".html") == strings.TrimSuffix(uri, ".html") {
 			return res, nil, nil, nil
 		}
 	}
@@ -1100,6 +1100,23 @@ func resourcesReadHandler(ctx context.Context, id jsonrpc.RequestId, primitiveMg
 		return jsonrpc.NewError(id, jsonrpc.INTERNAL_ERROR, err.Error(), nil), err
 	}
 
+	var contentMeta map[string]any
+	var uiMetadata any
+	if res != nil {
+		uiMetadata = res.GetResourceUIMetadata()
+	} else if resTmpl != nil {
+		uiMetadata = resTmpl.GetResourceUIMetadata()
+	}
+	if uiMetadata != nil {
+		contentMeta = map[string]any{
+			"ui": uiMetadata,
+		}
+		if meta == nil {
+			meta = make(map[string]any)
+		}
+		meta["ui"] = uiMetadata
+	}
+
 	result := &ReadResourceResult{
 		Result: Result{
 			ResultType: resultTypeComplete,
@@ -1116,6 +1133,7 @@ func resourcesReadHandler(ctx context.Context, id jsonrpc.RequestId, primitiveMg
 				ResourceContents: ResourceContents{
 					Uri:      uri,
 					MimeType: mimeType,
+					Metadata: contentMeta,
 				},
 				Text: textContent,
 			},

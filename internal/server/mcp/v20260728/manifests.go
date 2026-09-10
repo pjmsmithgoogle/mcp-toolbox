@@ -20,6 +20,7 @@ import (
 	"github.com/googleapis/mcp-toolbox/internal/group"
 	"github.com/googleapis/mcp-toolbox/internal/prompts"
 	"github.com/googleapis/mcp-toolbox/internal/resources"
+	mcputil "github.com/googleapis/mcp-toolbox/internal/server/mcp/util"
 	"github.com/googleapis/mcp-toolbox/internal/server/primitives"
 	"github.com/googleapis/mcp-toolbox/internal/sources"
 	"github.com/googleapis/mcp-toolbox/internal/tools"
@@ -142,28 +143,9 @@ func GenerateListToolsResult(pMgr *primitives.PrimitiveManager, g group.Group, u
 		if tool.HasSecureParams() && !supportsSecureParams {
 			continue
 		}
-		var uiMeta map[string]any
-		if uiMetaOrig := tool.GetToolUIMetadata(); uiMetaOrig != nil {
-			if uiMetaOrig.Resource != "" {
-				var uri string
-				if res, hasRes := pMgr.GetResource(uiMetaOrig.Resource); hasRes {
-					uri = res.GetURI()
-				} else if tmpl, hasTmpl := pMgr.GetResourceTemplate(uiMetaOrig.Resource); hasTmpl {
-					uri = tmpl.GetURITemplate()
-				} else {
-					return ListToolsResult{}, fmt.Errorf("unable to retrieve UI resource %q for tool %q", uiMetaOrig.Resource, toolName)
-				}
-				uiMeta = map[string]any{
-					"resourceUri": uri,
-				}
-				if len(uiMetaOrig.Visibility) > 0 {
-					vis := make([]string, len(uiMetaOrig.Visibility))
-					for i, v := range uiMetaOrig.Visibility {
-						vis[i] = string(v)
-					}
-					uiMeta["visibility"] = vis
-				}
-			}
+		uiMeta, err := mcputil.ResolveToolUIMetadata(pMgr, tool)
+		if err != nil {
+			return ListToolsResult{}, err
 		}
 		toolManifest := generateToolManifest(toolName, tool.GetDescription(), tool.GetAuthRequired(), params, tool.GetAnnotations(src), urlParams, uiMeta)
 		mcpManifest = append(mcpManifest, toolManifest)

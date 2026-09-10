@@ -945,6 +945,34 @@ description: |
   - tz (optional): Timezone for the query.
   - vis_config (optional): Optional JSON string or object specifying the visualization configuration (e.g. chart type, legend, colors).
 ---
+kind: tool
+name: render_dashboard
+type: looker-render-dashboard
+source: looker-source
+ui:
+  resource: looker_render_dashboard_ui
+  visibility:
+  - model
+  - app
+description: |
+  This tool retrieves a Looker dashboard definition by ID and returns an interactive dashboard UI response adhering to the MCP Apps specification, allowing dashboard tiles to load and execute queries asynchronously.
+
+  Parameters:
+  - dashboard_id (required): The unique identifier of the dashboard to render.
+  - filters (optional): Optional dashboard filter overrides as key-value pairs.
+---
+kind: tool
+name: run_query
+type: looker-run-query
+source: looker-source
+description: |
+  This tool executes a Looker query by ID (or slug) and returns the query results in JSON format.
+
+  Parameters:
+  - query_id (required): The unique identifier (or slug) of the query to execute.
+  - result_format (optional): The output format ('json_detail' or 'json'). Default is 'json_detail'.
+  - vis_config (optional): Optional visualization configuration JSON string to associate with the query response.
+---
 kind: group
 name: looker_tools
 description: These skills are designed for data discovery and business intelligence.
@@ -960,6 +988,8 @@ tools:
 - query_sql
 - query_url
 - render_visualization
+- render_dashboard
+- run_query
 - get_looks
 - run_look
 - make_look

@@ -108,6 +108,7 @@ type ServerCapabilities struct {
 		Subscribe   *bool `json:"subscribe,omitempty"`
 		ListChanged *bool `json:"listChanged,omitempty"`
 	} `json:"resources,omitempty"`
+	Extensions map[string]any `json:"extensions,omitempty"`
 }
 
 // Base interface for metadata with name (identifier) and title (display name) properties.

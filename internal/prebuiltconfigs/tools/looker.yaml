@@ -970,24 +970,121 @@ text: |
   <body>
     <div class="card">
       <h2>Looker MCP App (Static UI)</h2>
-      <div id="status">Interactive UI connected via MCP Apps protocol.</div>
+      <div id="status">Connecting via MCP Apps protocol...</div>
       <div id="content">Waiting for Looker tool result...</div>
+      <div id="debug" style="margin-top: 15px; font-size: 11px; color: #80868b; word-break: break-all;"></div>
     </div>
     <script>
-      window.addEventListener("message", (event) => {
-        const data = event.data;
-        if (!data) return;
-        if (data.type === "toolResult" || data.result || data.params) {
-          const content = document.getElementById("content");
-          content.textContent = JSON.stringify(data, null, 2);
-          document.getElementById("status").textContent = "Received tool data at " + new Date().toLocaleTimeString();
+      (function() {
+        const statusEl = document.getElementById("status");
+        const contentEl = document.getElementById("content");
+        const debugEl = document.getElementById("debug");
+        let isInitialized = false;
+
+        function logDebug(prefix, data) {
+          try {
+            debugEl.textContent = prefix + ": " + (typeof data === "object" ? JSON.stringify(data) : String(data));
+          } catch(e) {}
         }
-      });
-      window.parent.postMessage({
-        jsonrpc: "2.0",
-        method: "ui/notifications/size-changed",
-        params: { height: 400 }
-      }, "*");
+
+        function extractPayload(msg) {
+          if (!msg) return null;
+          if (msg.params && Array.isArray(msg.params.content)) {
+            const textItem = msg.params.content.find(c => c.type === 'text');
+            if (textItem && textItem.text) {
+              try {
+                return JSON.parse(textItem.text);
+              } catch (e) {
+                return textItem.text;
+              }
+            }
+            return msg.params.content;
+          }
+          if (msg.params && msg.params.structuredContent) {
+            return msg.params.structuredContent;
+          }
+          if (msg.params) {
+            return msg.params.toolResult || msg.params.result || msg.params.data || msg.params;
+          }
+          return msg.result || msg.data || msg;
+        }
+
+        function renderData(payload, source) {
+          statusEl.textContent = "Received tool data (" + (source || "message") + ") at " + new Date().toLocaleTimeString();
+          contentEl.textContent = typeof payload === "object" ? JSON.stringify(payload, null, 2) : String(payload);
+          if (window.parent && window.parent !== window) {
+            window.parent.postMessage({
+              jsonrpc: "2.0",
+              method: "ui/notifications/size-changed",
+              params: { height: document.body.scrollHeight || 450 }
+            }, "*");
+          }
+        }
+
+        window.addEventListener("message", function(event) {
+          const msg = event.data;
+          if (!msg) return;
+          logDebug("Last incoming msg", msg);
+
+          // 1. Handshake response from host
+          if (msg.id === 1 && msg.result) {
+            statusEl.textContent = "Host handshake acknowledged.";
+            if (!isInitialized && window.parent && window.parent !== window) {
+              isInitialized = true;
+              window.parent.postMessage({
+                jsonrpc: "2.0",
+                method: "ui/notifications/initialized",
+                params: {}
+              }, "*");
+            }
+            return;
+          }
+
+          // 2. Host-initiated initialize
+          if (msg.type === "ui/initialize" || msg.method === "ui/initialize") {
+            statusEl.textContent = "Host initialized UI.";
+            if (window.parent && window.parent !== window) {
+              window.parent.postMessage({
+                jsonrpc: "2.0",
+                method: "ui/notifications/initialized",
+                params: {}
+              }, "*");
+            }
+            if (msg.params) {
+              const payload = extractPayload(msg);
+              if (payload) renderData(payload, msg.method || msg.type);
+            }
+            return;
+          }
+
+          // 3. Tool results / notifications
+          const payload = extractPayload(msg);
+          if (payload) {
+            renderData(payload, msg.method || msg.type || "toolResult");
+          }
+        });
+
+        // Announce readiness and initiate standard MCP Apps handshake
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "ui/initialize",
+            params: {
+              appInfo: { name: "Looker MCP App", version: "1.0.0" },
+              appCapabilities: {},
+              protocolVersion: "2026-01-26"
+            }
+          }, "*");
+
+          // Also request initial sizing
+          window.parent.postMessage({
+            jsonrpc: "2.0",
+            method: "ui/notifications/size-changed",
+            params: { height: 450 }
+          }, "*");
+        }
+      })();
     </script>
   </body>
   </html>

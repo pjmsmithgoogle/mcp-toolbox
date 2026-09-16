@@ -1139,6 +1139,10 @@ func resourcesReadHandler(ctx context.Context, id jsonrpc.RequestId, primitiveMg
 	}
 	if uiMeta != nil {
 		contentMeta = map[string]any{"ui": uiMeta}
+		if meta == nil {
+			meta = make(map[string]any)
+		}
+		meta["ui"] = uiMeta
 	}
 
 	result := &ReadResourceResult{

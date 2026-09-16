@@ -366,25 +366,15 @@ func TestGenerateListToolsResult(t *testing.T) {
 		}
 	})
 
-	t.Run("ui metadata empty resourceUri when resource not in primitive manager", func(t *testing.T) {
+	t.Run("ui metadata error when resource not in primitive manager", func(t *testing.T) {
 		toolDirectURI := testutils.NewMockToolWithUI("tool-direct", "", "", nil, false, false, "ui://direct-uri")
 		toolsMap := map[string]tools.Tool{"tool-direct": toolDirectURI}
 		pMgr := primitives.NewPrimitiveManager(nil, nil, nil, toolsMap, nil, nil, nil, nil)
 		g := group.NewGroup(group.GroupConfig{ToolNames: []string{"tool-direct"}})
 
-		res, err := GenerateListToolsResult(pMgr, g, nil, false, true)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(res.Tools) != 1 {
-			t.Fatalf("expected 1 tool, got %d", len(res.Tools))
-		}
-		uiMeta, ok := res.Tools[0].Metadata["ui"].(map[string]any)
-		if !ok {
-			t.Fatalf("expected metadata to have ui map, got %v", res.Tools[0].Metadata["ui"])
-		}
-		if uiMeta["resourceUri"] != "" {
-			t.Errorf("expected resourceUri=\"\", got %v", uiMeta["resourceUri"])
+		_, err := GenerateListToolsResult(pMgr, g, nil, false, true)
+		if err == nil {
+			t.Fatalf("expected error when UI resource is not in primitive manager, got nil")
 		}
 	})
 

@@ -108,9 +108,10 @@ type ResourceCapabilities struct {
 // capabilities are defined here, in this schema, but this is not a closed set: any
 // server can define its own, additional capabilities.
 type ServerCapabilities struct {
-	Tools     *ListChanged          `json:"tools,omitempty"`
-	Prompts   *ListChanged          `json:"prompts,omitempty"`
-	Resources *ResourceCapabilities `json:"resources,omitempty"`
+	Tools      *ListChanged          `json:"tools,omitempty"`
+	Prompts    *ListChanged          `json:"prompts,omitempty"`
+	Resources  *ResourceCapabilities `json:"resources,omitempty"`
+	Extensions map[string]any        `json:"extensions,omitempty"`
 }
 
 // Base interface for metadata with name (identifier) and title (display name) properties.
@@ -443,6 +444,8 @@ type ResourceContents struct {
 	Uri string `json:"uri"`
 	// The MIME type of this resource, if known.
 	MimeType string `json:"mimeType,omitempty"`
+	// Additional metadata attached to this resource content.
+	Metadata map[string]any `json:"_meta,omitempty"`
 }
 
 // Text resource content.

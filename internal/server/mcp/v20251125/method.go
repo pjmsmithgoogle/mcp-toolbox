@@ -99,6 +99,9 @@ func initializeHandler(ctx context.Context, id jsonrpc.RequestId, body []byte) (
 				Subscribe   *bool `json:"subscribe,omitempty"`
 				ListChanged *bool `json:"listChanged,omitempty"`
 			}{},
+			Extensions: map[string]any{
+				"io.modelcontextprotocol/ui": map[string]any{},
+			},
 		},
 		ServerInfo: Implementation{
 			BaseMetadata: BaseMetadata{
@@ -659,6 +662,15 @@ func getResourceOrTemplateByURI(uri string, g group.Group, primitiveMgr *primiti
 			}
 		}
 	}
+	// UI resources and templates are globally accessible and not limited to specific groups.
+	if res, ok := primitiveMgr.GetUIResourceFromURI(uri); ok {
+		return res, nil, nil, nil
+	}
+
+	if rt, params, ok := primitiveMgr.GetUIResourceTemplateByURI(uri); ok {
+		return nil, rt, params, nil
+	}
+
 	return nil, nil, nil, fmt.Errorf("no resource or template found for URI: %s", uri)
 }
 
@@ -724,12 +736,27 @@ func resourcesReadHandler(ctx context.Context, id jsonrpc.RequestId, primitiveMg
 	}
 	logger.DebugContext(ctx, "read resource successfully")
 
+	var contentMeta map[string]any
+	var uiMeta any
+	if res != nil && res.IsUI() {
+		uiMeta = res.GetResourceUIMetadata()
+	} else if resTmpl != nil && resTmpl.IsUI() {
+		uiMeta = resTmpl.GetResourceUIMetadata()
+	}
+	if uiMeta != nil {
+		contentMeta = map[string]any{"ui": uiMeta}
+	}
+
 	result := &ReadResourceResult{
+		Result: jsonrpc.Result{
+			Meta: contentMeta,
+		},
 		Contents: []TextResourceContents{
 			{
 				ResourceContents: ResourceContents{
 					Uri:      uri,
 					MimeType: mimeType,
+					Metadata: contentMeta,
 				},
 				Text: textContent,
 			},

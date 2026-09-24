@@ -206,6 +206,10 @@ func (cfg Config) Initialize(context.Context) (tools.Tool, error) {
 	addOrigin(lookerBaseURL)
 	addOrigin(lookerUIURL)
 
+	// Permit official Looker Data Apps runtime and vendor bundles (lit-canvas, data-app.js, ag-grid, highcharts)
+	ensureDomain(&csp.ResourceDomains, "https://www.gstatic.com")
+	ensureDomain(&csp.ResourceDomains, "https://storage.googleapis.com")
+
 	// In local development environments, permit all local dev ports for both resources and connect
 	if strings.Contains(lookerBaseURL, "localhost") || strings.Contains(lookerUIURL, "localhost") ||
 		strings.Contains(lookerBaseURL, "127.0.0.1") || strings.Contains(lookerUIURL, "127.0.0.1") {
@@ -478,12 +482,59 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		return nil, util.ProcessGeneralError(err)
 	}
 
+	inlineExtensions := make(map[string]any)
+	if dashboard.DashboardElements != nil {
+		for _, el := range *dashboard.DashboardElements {
+			if el.ExtensionId == nil || *el.ExtensionId == "" {
+				continue
+			}
+			extID := *el.ExtensionId
+			isExtType := el.Type != nil && *el.Type == "extension"
+			if strings.HasPrefix(extID, "db::") || isExtType {
+				rawID := strings.TrimPrefix(extID, "db::")
+				escapedID := url.PathEscape(rawID)
+
+				var metaMap map[string]any
+				if metaErr := sdk.AuthSession.Do(&metaMap, "GET", "/4.0", fmt.Sprintf("/inline_extension/%s", escapedID), nil, nil, source.LookerApiSettings()); metaErr != nil {
+					logger.WarnContext(ctx, "failed to fetch inline extension metadata", "extension_id", extID, "error", metaErr)
+				}
+
+				var bundleCode string
+				if bundleErr := sdk.AuthSession.Do(&bundleCode, "GET", "/4.0", fmt.Sprintf("/inline_extension/%s/bundle.js", escapedID), nil, nil, source.LookerApiSettings()); bundleErr != nil {
+					logger.WarnContext(ctx, "failed to fetch inline extension bundle", "extension_id", extID, "error", bundleErr)
+				} else if bundleCode != "" {
+					entry := map[string]any{
+						"id":   "db::" + rawID,
+						"code": bundleCode,
+					}
+					if metaMap != nil {
+						if sha, ok := metaMap["sha256_hash"]; ok {
+							entry["sha256_hash"] = sha
+						}
+						if ent, ok := metaMap["entitlements"]; ok {
+							entry["entitlements"] = ent
+						}
+						if label, ok := metaMap["label"]; ok {
+							entry["label"] = label
+						}
+					}
+					inlineExtensions[extID] = entry
+					inlineExtensions["db::"+rawID] = entry
+					inlineExtensions[rawID] = entry
+				}
+			}
+		}
+	}
+
 	dashboardData := map[string]any{
 		"dashboard": dashboard,
 		"filters":   filtersMap,
 	}
+	if len(inlineExtensions) > 0 {
+		dashboardData["inline_extensions"] = inlineExtensions
+	}
 
-	logger.DebugContext(ctx, "dashboardData prepared", "dashboard_id", dashboardId)
+	logger.DebugContext(ctx, "dashboardData prepared", "dashboard_id", dashboardId, "inline_extensions_count", len(inlineExtensions))
 
 	return map[string]any{
 		"dashboardData": dashboardData,

@@ -30,6 +30,7 @@ import (
 	"github.com/googleapis/mcp-toolbox/internal/resources"
 	"github.com/googleapis/mcp-toolbox/internal/sources"
 	"github.com/googleapis/mcp-toolbox/internal/tools"
+	"github.com/googleapis/mcp-toolbox/internal/tools/looker/lookercommon"
 	"github.com/googleapis/mcp-toolbox/internal/util"
 	"github.com/googleapis/mcp-toolbox/internal/util/parameters"
 
@@ -279,9 +280,14 @@ type Tool struct {
 	csp        *resources.CSPConfig
 }
 
-func (t Tool) renderHTML(rawHTML string) string {
-	assetBaseURL := ""
-	if lookerUIURL := os.Getenv("LOOKER_UI_URL"); lookerUIURL != "" {
+// renderHTML makes the fetched UI HTML loadable inside the MCP host's sandbox.
+// publicOrigin is the browser-facing Looker origin discovered from the HTML (see
+// lookercommon.DiscoverMCPUIPublicOrigin). If it is empty, relative asset URLs
+// are resolved against LOOKER_UI_URL, then the source BaseUrl, then
+// LOOKER_BASE_URL.
+func (t Tool) renderHTML(rawHTML, publicOrigin string) string {
+	assetBaseURL := publicOrigin
+	if lookerUIURL := os.Getenv("LOOKER_UI_URL"); assetBaseURL == "" && lookerUIURL != "" {
 		lookerUIURL = strings.TrimSpace(lookerUIURL)
 		if !strings.Contains(lookerUIURL, "://") {
 			lookerUIURL = "http://" + lookerUIURL
@@ -367,22 +373,6 @@ func (t Tool) fetchRemoteUI(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("no Looker instance URL configured to fetch dashboard UI")
 	}
 
-	if parsed, err := url.Parse(remoteURL); err == nil && parsed.Host != "" && t.csp != nil {
-		origin := fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
-		t.state.mu.Lock()
-		found := false
-		for _, d := range t.csp.ResourceDomains {
-			if strings.TrimSuffix(d, "/") == origin {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.csp.ResourceDomains = append(t.csp.ResourceDomains, origin)
-		}
-		t.state.mu.Unlock()
-	}
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, remoteURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request for dashboard UI at %s: %w", remoteURL, err)
@@ -414,13 +404,39 @@ func (t Tool) fetchRemoteUI(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("empty dashboard UI returned from Looker at %s", remoteURL)
 	}
 
-	html := t.renderHTML(string(bodyBytes))
+	rawHTML := string(bodyBytes)
+	publicOrigin := lookercommon.DiscoverMCPUIPublicOrigin(rawHTML)
+	html := t.renderHTML(rawHTML, publicOrigin)
 	t.state.mu.Lock()
+	t.allowUIOrigin(remoteURL, publicOrigin)
 	t.state.cachedHTML = html
 	t.state.cacheTime = time.Now()
 	t.state.mu.Unlock()
 
 	return html, nil
+}
+
+// allowUIOrigin adds the origin the browser loads UI assets from to the CSP.
+// That is the public origin Looker declared in the HTML. If Looker didn't
+// declare one (e.g. local development over http), the origin toolbox fetched
+// the UI from is allowed instead. The caller must hold t.state.mu.
+func (t Tool) allowUIOrigin(remoteURL, publicOrigin string) {
+	if t.csp == nil {
+		return
+	}
+	if publicOrigin != "" {
+		lookercommon.AddCSPOrigin(t.csp, publicOrigin)
+		return
+	}
+	if parsed, err := url.Parse(remoteURL); err == nil && parsed.Host != "" {
+		origin := fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
+		for _, d := range t.csp.ResourceDomains {
+			if strings.TrimSuffix(d, "/") == origin {
+				return
+			}
+		}
+		t.csp.ResourceDomains = append(t.csp.ResourceDomains, origin)
+	}
 }
 
 func (t Tool) GetResources() []resources.Resource {

@@ -161,6 +161,70 @@ func TestInitializeAndResourceProvider(t *testing.T) {
 	}
 }
 
+func TestRemoteUIPublicOriginDiscovery(t *testing.T) {
+	ctx := context.Background()
+
+	// Simulates the managed MCP server: toolbox fetches the UI over an internal
+	// address, but Looker declares its public Host URL in the entry script src.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><head>` +
+			`<style>@font-face { src: url('/fonts/roboto.woff2'); }</style>` +
+			`<script nonce="n" src="https://looker.example.com/webpack/en/mcp-render-dashboard.webpack.js?v=1"></script>` +
+			`</head><body></body></html>`))
+	}))
+	defer ts.Close()
+
+	t.Setenv("LOOKER_UI_URL", ts.URL)
+	t.Setenv("LOOKER_BASE_URL", "")
+
+	cfg := lkr.Config{
+		ConfigBase: tools.ConfigBase{Name: "render_dashboard", Description: "Render dashboard tool"},
+		Type:       "looker-render-dashboard",
+		Source:     "my-instance",
+	}
+	toolInstance, err := cfg.Initialize(ctx)
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	res, ok := toolInstance.(resources.ResourceProvider).GetResources()[0].(*resources.DynamicUIResource)
+	if !ok {
+		t.Fatalf("expected *resources.DynamicUIResource")
+	}
+
+	content, err := res.Read(ctx, nil)
+	if err != nil {
+		t.Fatalf("failed to read resource: %v", err)
+	}
+	html := content.(string)
+	if !strings.Contains(html, `url('https://looker.example.com/fonts/roboto.woff2')`) {
+		t.Errorf("expected relative font URL to be rewritten to the public origin, got %s", html)
+	}
+	if strings.Contains(html, "nonce=") {
+		t.Errorf("expected nonce attributes to be stripped, got %s", html)
+	}
+
+	csp := res.CSP
+	if !contains(csp.ResourceDomains, "https://looker.example.com") {
+		t.Errorf("expected ResourceDomains to contain the public origin, got %v", csp.ResourceDomains)
+	}
+	for _, want := range []string{"https://looker.example.com", "wss://looker.example.com"} {
+		if !contains(csp.ConnectDomains, want) {
+			t.Errorf("expected ConnectDomains to contain %q, got %v", want, csp.ConnectDomains)
+		}
+	}
+}
+
+func contains(list []string, value string) bool {
+	for _, v := range list {
+		if v == value {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRemoteUIFetching(t *testing.T) {
 	ctx := context.Background()
 

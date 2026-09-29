@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	yaml "github.com/goccy/go-yaml"
@@ -117,6 +118,97 @@ func (t Tool) ValidateSource(source sources.Source) error {
 	return nil
 }
 
+func dashboardToMap(v v4.Dashboard) map[string]any {
+	vMap := make(map[string]any)
+	if v.Id != nil {
+		vMap["id"] = *v.Id
+	}
+	if v.Title != nil {
+		vMap["title"] = *v.Title
+	}
+	if v.Description != nil {
+		vMap["description"] = *v.Description
+	}
+	if v.CertificationMetadata != nil {
+		vMap["certification_metadata"] = v.CertificationMetadata
+	}
+	return vMap
+}
+
+func isNullFilterExpr(pattern string) bool {
+	trimmed := strings.TrimSpace(pattern)
+	return strings.EqualFold(trimmed, "IS NULL") || strings.EqualFold(trimmed, "NOT NULL")
+}
+
+// matchLookerPattern matches a string against a Looker search pattern
+// (case-insensitive, supporting '%' and '_' SQL LIKE wildcards; if no '%'
+// wildcard is specified, also matches case-insensitive substring so searching
+// by partial title or LookML dashboard ID/slug works naturally).
+func matchLookerPattern(value, pattern string) bool {
+	if pattern == "" || pattern == "%" {
+		return true
+	}
+	valLower := strings.ToLower(value)
+	patLower := strings.ToLower(pattern)
+
+	var sb strings.Builder
+	sb.WriteString("(?s)^")
+	for _, ch := range patLower {
+		switch ch {
+		case '%':
+			sb.WriteString(".*")
+		case '_':
+			sb.WriteString(".")
+		default:
+			sb.WriteString(regexp.QuoteMeta(string(ch)))
+		}
+	}
+	sb.WriteString("$")
+	if matched, err := regexp.MatchString(sb.String(), valLower); err == nil && matched {
+		return true
+	}
+
+	if !strings.Contains(patLower, "%") {
+		return strings.Contains(valLower, patLower)
+	}
+	return false
+}
+
+func matchNullableLookerField(val *string, pattern string) bool {
+	if pattern == "" {
+		return true
+	}
+	trimmed := strings.TrimSpace(pattern)
+	if strings.EqualFold(trimmed, "IS NULL") {
+		return val == nil || *val == ""
+	}
+	if strings.EqualFold(trimmed, "NOT NULL") {
+		return val != nil && *val != ""
+	}
+	if val == nil {
+		return false
+	}
+	return matchLookerPattern(*val, pattern)
+}
+
+func matchesLookmlDashboard(v v4.Dashboard, titlePattern, descPattern string) bool {
+	if titlePattern != "" {
+		if isNullFilterExpr(titlePattern) {
+			if !matchNullableLookerField(v.Title, titlePattern) {
+				return false
+			}
+		} else if !matchNullableLookerField(v.Title, titlePattern) && !matchNullableLookerField(v.Id, titlePattern) {
+			return false
+		}
+	}
+	if descPattern != "" {
+		if !matchNullableLookerField(v.Description, descPattern) {
+			return false
+		}
+	}
+	return true
+}
+
 func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.ParamValues, accessToken tools.AccessToken) (any, util.ToolboxError) {
 	source, ok := s.(compatibleSource)
 	if !ok {
@@ -162,24 +254,42 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 	}
 	logger.DebugContext(ctx, "Got response %v", resp)
 	var data []any
+	seenIDs := make(map[string]bool)
 	for _, v := range resp {
 		logger.DebugContext(ctx, "Got response element of %v\n", v)
-		vMap := make(map[string]any)
 		if v.Id != nil {
-			vMap["id"] = *v.Id
+			seenIDs[*v.Id] = true
 		}
-		if v.Title != nil {
-			vMap["title"] = *v.Title
-		}
-		if v.Description != nil {
-			vMap["description"] = *v.Description
-		}
-		if v.CertificationMetadata != nil {
-			vMap["certification_metadata"] = v.CertificationMetadata
-		}
+		vMap := dashboardToMap(v)
 		logger.DebugContext(ctx, "Converted to %v\n", vMap)
 		data = append(data, vMap)
 	}
+
+	if limit <= 0 || int64(len(data)) < limit {
+		lookmlResp, lookmlErr := lookercommon.SearchLookmlDashboards(sdk, map[string]any{"fields": fields}, source.LookerApiSettings())
+		if lookmlErr != nil {
+			logger.DebugContext(ctx, "error searching lookml dashboards: %v", lookmlErr)
+		} else {
+			for _, v := range lookmlResp {
+				if v.Id != nil && seenIDs[*v.Id] {
+					continue
+				}
+				if !matchesLookmlDashboard(v, title, desc) {
+					continue
+				}
+				if v.Id != nil {
+					seenIDs[*v.Id] = true
+				}
+				vMap := dashboardToMap(v)
+				logger.DebugContext(ctx, "Converted LookML dashboard to %v\n", vMap)
+				data = append(data, vMap)
+				if limit > 0 && int64(len(data)) >= limit {
+					break
+				}
+			}
+		}
+	}
+
 	logger.DebugContext(ctx, "data = ", data)
 
 	return data, nil

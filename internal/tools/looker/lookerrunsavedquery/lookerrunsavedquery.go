@@ -261,7 +261,7 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 			if strings.Contains(qErr.Error(), "status=401") {
 				return nil, util.NewClientServerError("unauthorized error", http.StatusUnauthorized, qErr)
 			}
-			return nil, util.ProcessGeneralError(qErr)
+			return nil, util.ProcessGeneralError(lookercommon.ExtractLookerErrorMessage(qErr))
 		}
 
 		wq := BuildWriteQueryWithOverrides(baseQuery, filterOverrides, sortOverrides)
@@ -288,7 +288,7 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		if strings.Contains(rErr.Error(), "status=401") {
 			return nil, util.NewClientServerError("unauthorized error", http.StatusUnauthorized, rErr)
 		}
-		return nil, util.ProcessGeneralError(rErr)
+		return nil, util.ProcessGeneralError(lookercommon.ExtractLookerErrorMessage(rErr))
 	}
 
 	if resultFormat == "json_detail" {
@@ -304,6 +304,9 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 			"totals_data": detailResp["totals_data"],
 			"query_id":    queryId,
 			"status":      "success",
+		}
+		if errs, ok := detailResp["errors"]; ok && errs != nil {
+			result["errors"] = errs
 		}
 		if visConfigObj != nil {
 			result["vis_config"] = visConfigObj

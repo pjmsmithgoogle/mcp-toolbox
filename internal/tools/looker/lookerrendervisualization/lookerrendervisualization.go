@@ -204,8 +204,13 @@ func (cfg Config) Initialize(context.Context) (tools.Tool, error) {
 			"https://lookercdn.com",
 			"https://*.cdn.looker.app",
 			"https://cdn.looker.app",
+			"https://maps.googleapis.com",
+			"https://maps.gstatic.com",
 			"https://*.googleapis.com",
+			"https://*.gstatic.com",
 			"https://*.google.com",
+			"https://*.goog",
+			"https://*.googleusercontent.com",
 		},
 	}
 

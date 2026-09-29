@@ -206,10 +206,26 @@ func TestRemoteUIPublicOriginDiscovery(t *testing.T) {
 	}
 
 	csp := res.CSP
-	if !contains(csp.ResourceDomains, "https://looker.example.com") {
-		t.Errorf("expected ResourceDomains to contain the public origin, got %v", csp.ResourceDomains)
+	for _, want := range []string{
+		"https://looker.example.com",
+		"https://maps.googleapis.com",
+		"https://maps.gstatic.com",
+		"https://*.gstatic.com",
+		"https://*.googleusercontent.com",
+		"https://www.google.com",
+	} {
+		if !contains(csp.ResourceDomains, want) {
+			t.Errorf("expected ResourceDomains to contain %q, got %v", want, csp.ResourceDomains)
+		}
 	}
-	for _, want := range []string{"https://looker.example.com", "wss://looker.example.com"} {
+	for _, want := range []string{
+		"https://looker.example.com",
+		"wss://looker.example.com",
+		"https://maps.googleapis.com",
+		"https://maps.gstatic.com",
+		"https://*.gstatic.com",
+		"https://*.googleusercontent.com",
+	} {
 		if !contains(csp.ConnectDomains, want) {
 			t.Errorf("expected ConnectDomains to contain %q, got %v", want, csp.ConnectDomains)
 		}

@@ -156,6 +156,41 @@ func TestInitializeAndResourceProvider(t *testing.T) {
 	if !ok || !strings.Contains(contentStr, "Looker Visualization") {
 		t.Errorf("expected HTML content to contain Looker Visualization, got %v", content)
 	}
+
+	dynRes, ok := resList[0].(*resources.DynamicUIResource)
+	if !ok {
+		t.Fatalf("expected *resources.DynamicUIResource")
+	}
+	for _, want := range []string{
+		"https://maps.googleapis.com",
+		"https://maps.gstatic.com",
+		"https://*.gstatic.com",
+		"https://*.googleusercontent.com",
+		"https://www.google.com",
+	} {
+		if !containsStr(dynRes.CSP.ResourceDomains, want) {
+			t.Errorf("expected ResourceDomains to contain %q, got %v", want, dynRes.CSP.ResourceDomains)
+		}
+	}
+	for _, want := range []string{
+		"https://maps.googleapis.com",
+		"https://maps.gstatic.com",
+		"https://*.gstatic.com",
+		"https://*.googleusercontent.com",
+	} {
+		if !containsStr(dynRes.CSP.ConnectDomains, want) {
+			t.Errorf("expected ConnectDomains to contain %q, got %v", want, dynRes.CSP.ConnectDomains)
+		}
+	}
+}
+
+func containsStr(list []string, value string) bool {
+	for _, v := range list {
+		if v == value {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRemoteUIFetching(t *testing.T) {

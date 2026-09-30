@@ -594,3 +594,75 @@ type lookerTestError string
 
 func (e lookerTestError) Error() string { return string(e) }
 
+func TestStripDrillLinks(t *testing.T) {
+	detailResp := map[string]any{
+		"data": []any{
+			map[string]any{
+				"orders.status": map[string]any{
+					"value": "complete",
+					"links": []any{map[string]any{"label": "Drill", "url": "/explore/x"}},
+				},
+				"orders.count": map[string]any{
+					"2025": map[string]any{
+						"value":    42,
+						"rendered": "42",
+						"links":    []any{map[string]any{"label": "Show All 42", "url": "/explore/y"}},
+					},
+				},
+			},
+		},
+		"totals_data": map[string]any{
+			"orders.count": map[string]any{
+				"value": 42,
+				"links": []any{map[string]any{"label": "Total Drill", "url": "/explore/z"}},
+			},
+		},
+		"fields": map[string]any{
+			"measures": []any{
+				map[string]any{
+					"name":         "orders.count",
+					"label":        "Order Count",
+					"drill_fields": []any{"orders.id", "orders.created_date"},
+					"sql":          "${TABLE}.id",
+					"can":          map[string]any{"filter": true},
+				},
+			},
+		},
+	}
+
+	lookercommon.StripDrillLinks(detailResp)
+
+	row := detailResp["data"].([]any)[0].(map[string]any)
+	statusCell := row["orders.status"].(map[string]any)
+	if _, hasLinks := statusCell["links"]; hasLinks {
+		t.Errorf("expected links to be stripped from flat cell, got %v", statusCell)
+	}
+	if statusCell["value"] != "complete" {
+		t.Errorf("expected value to be preserved, got %v", statusCell["value"])
+	}
+
+	pivotCell := row["orders.count"].(map[string]any)["2025"].(map[string]any)
+	if _, hasLinks := pivotCell["links"]; hasLinks {
+		t.Errorf("expected links to be stripped from pivoted cell, got %v", pivotCell)
+	}
+	if pivotCell["value"] != 42 {
+		t.Errorf("expected pivoted cell value 42 to be preserved, got %v", pivotCell["value"])
+	}
+
+	totalsCell := detailResp["totals_data"].(map[string]any)["orders.count"].(map[string]any)
+	if _, hasLinks := totalsCell["links"]; hasLinks {
+		t.Errorf("expected links to be stripped from totals_data cell, got %v", totalsCell)
+	}
+
+	measureField := detailResp["fields"].(map[string]any)["measures"].([]any)[0].(map[string]any)
+	for _, strippedKey := range []string{"drill_fields", "sql", "can"} {
+		if _, exists := measureField[strippedKey]; exists {
+			t.Errorf("expected %q to be stripped from field metadata, got %v", strippedKey, measureField)
+		}
+	}
+	if measureField["name"] != "orders.count" || measureField["label"] != "Order Count" {
+		t.Errorf("expected essential field metadata to be preserved, got %v", measureField)
+	}
+}
+
+

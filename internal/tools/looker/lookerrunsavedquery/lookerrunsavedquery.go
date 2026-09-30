@@ -99,6 +99,11 @@ func (cfg Config) Initialize(context.Context) (tools.Tool, error) {
 		parameters.NewStringParameter("sort_field", "A field to be used as a sort in the query"),
 		parameters.WithArrayDefault([]any{}),
 	)
+	generateDrillLinksParameter := parameters.NewBooleanParameter(
+		"generate_drill_links",
+		"Optional flag indicating whether to generate drill links in the query result.",
+		parameters.WithBooleanRequired(false),
+	)
 
 	allParameters := parameters.Parameters{
 		queryIdParameter,
@@ -106,6 +111,7 @@ func (cfg Config) Initialize(context.Context) (tools.Tool, error) {
 		visConfigParameter,
 		filtersParameter,
 		sortsParameter,
+		generateDrillLinksParameter,
 	}
 
 	return Tool{
@@ -239,6 +245,11 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		}
 	}
 
+	var generateDrillLinks *bool
+	if gdl, ok := paramsMap["generate_drill_links"].(bool); ok {
+		generateDrillLinks = &gdl
+	}
+
 	hasOverrides := len(filterOverrides) > 0 || len(sortOverrides) > 0
 
 	sdk, err := source.GetLookerSDK(ctx, string(accessToken))
@@ -268,10 +279,10 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		if escErr := lookercommon.EscapeUnquotedParameterFilters(ctx, sdk, &wq, source.LookerApiSettings()); escErr != nil {
 			logger.WarnContext(ctx, "skipping unquoted-parameter escape, metadata lookup failed", "error", escErr)
 		}
-		resp, rErr = lookercommon.RunInlineQuery(ctx, sdk, &wq, resultFormat, source.LookerApiSettings())
+		resp, rErr = lookercommon.RunInlineQueryWithDrillLinks(ctx, sdk, &wq, resultFormat, generateDrillLinks, source.LookerApiSettings())
 	} else {
 		// 1. Attempt to run saved query by ID or slug via API endpoint
-		resp, rErr = lookercommon.RunSavedQuery(ctx, sdk, queryId, resultFormat, source.LookerApiSettings())
+		resp, rErr = lookercommon.RunSavedQueryWithDrillLinks(ctx, sdk, queryId, resultFormat, generateDrillLinks, source.LookerApiSettings())
 		if rErr != nil {
 			logger.WarnContext(ctx, "RunSavedQuery failed, attempting slug lookup", "query_id", queryId, "error", rErr)
 
@@ -279,7 +290,7 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 			slugQuery, qErr := sdk.QueryForSlug(queryId, "", source.LookerApiSettings())
 			if qErr == nil {
 				wq := BuildWriteQueryWithOverrides(slugQuery, nil, nil)
-				resp, rErr = lookercommon.RunInlineQuery(ctx, sdk, &wq, resultFormat, source.LookerApiSettings())
+				resp, rErr = lookercommon.RunInlineQueryWithDrillLinks(ctx, sdk, &wq, resultFormat, generateDrillLinks, source.LookerApiSettings())
 			}
 		}
 	}
@@ -295,6 +306,9 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		var detailResp map[string]any
 		if err := json.Unmarshal([]byte(resp), &detailResp); err != nil {
 			return nil, util.NewClientServerError("error unmarshaling json_detail response", http.StatusInternalServerError, err)
+		}
+		if generateDrillLinks != nil && !*generateDrillLinks {
+			lookercommon.StripDrillLinks(detailResp)
 		}
 
 		result := map[string]any{

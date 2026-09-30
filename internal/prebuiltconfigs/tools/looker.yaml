@@ -974,6 +974,7 @@ description: |
   - vis_config (optional): Optional visualization configuration JSON string to associate with the query response.
   - filters (optional): Optional filter overrides for the query as key-value pairs (e.g. {"view.field": "value"}).
   - sorts (optional): Optional sort overrides for the query as an array of strings (e.g. ["view.field desc"]).
+  - generate_drill_links (optional): Optional flag indicating whether to generate drill links in the query result.
 ---
 kind: group
 name: looker_tools

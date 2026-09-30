@@ -393,7 +393,8 @@ type QueryApiClientContext struct {
 }
 
 type RenderOptions struct {
-	Format string `json:"format"`
+	Format             string `json:"format"`
+	GenerateDrillLinks *bool  `json:"generate_drill_links,omitempty"`
 }
 
 type RequestRunInlineQuery2 struct {
@@ -409,18 +410,24 @@ func RunInlineQuery2(l *v4.LookerSDK, request RequestRunInlineQuery2, options *r
 }
 
 func RunInlineQuery(ctx context.Context, sdk *v4.LookerSDK, wq *v4.WriteQuery, format string, options *rtl.ApiSettings) (string, error) {
+	return RunInlineQueryWithDrillLinks(ctx, sdk, wq, format, nil, options)
+}
+
+func RunInlineQueryWithDrillLinks(ctx context.Context, sdk *v4.LookerSDK, wq *v4.WriteQuery, format string, generateDrillLinks *bool, options *rtl.ApiSettings) (string, error) {
 	logger, err := util.LoggerFromContext(ctx)
 	if err != nil {
 		return "", fmt.Errorf("unable to get logger from ctx: %s", err)
 	}
 	req := v4.RequestRunInlineQuery{
-		Body:         *wq,
-		ResultFormat: format,
+		Body:               *wq,
+		ResultFormat:       format,
+		GenerateDrillLinks: generateDrillLinks,
 	}
 	req2 := RequestRunInlineQuery2{
 		Query: *wq,
 		RenderOpts: RenderOptions{
-			Format: format,
+			Format:             format,
+			GenerateDrillLinks: generateDrillLinks,
 		},
 		QueryApiClientCtx: QueryApiClientContext{
 			Name: "MCP Toolbox",
@@ -560,14 +567,104 @@ func GetQueryBySlug(ctx context.Context, l *v4.LookerSDK, slug string, options *
 }
 
 func RunSavedQuery(ctx context.Context, l *v4.LookerSDK, queryId string, format string, options *rtl.ApiSettings) (string, error) {
+	return RunSavedQueryWithDrillLinks(ctx, l, queryId, format, nil, options)
+}
+
+func RunSavedQueryWithDrillLinks(ctx context.Context, l *v4.LookerSDK, queryId string, format string, generateDrillLinks *bool, options *rtl.ApiSettings) (string, error) {
 	var result string
 	path := fmt.Sprintf("/queries/%s/run/%s", url.PathEscape(queryId), url.PathEscape(format))
-	err := l.AuthSession.Do(&result, "GET", "/4.0", path, nil, nil, options)
+	var queryParams map[string]any
+	if generateDrillLinks != nil {
+		queryParams = map[string]any{
+			"generate_drill_links": *generateDrillLinks,
+		}
+	}
+	err := l.AuthSession.Do(&result, "GET", "/4.0", path, queryParams, nil, options)
 	if err != nil {
 		// Also try POST if GET failed
-		err = l.AuthSession.Do(&result, "POST", "/4.0", path, nil, nil, options)
+		err = l.AuthSession.Do(&result, "POST", "/4.0", path, queryParams, nil, options)
 	}
 	return result, err
+}
+
+func stripCellLinks(val any) {
+	cellMap, ok := val.(map[string]any)
+	if !ok {
+		return
+	}
+	delete(cellMap, "links")
+	for k, nestedVal := range cellMap {
+		if k == "value" {
+			continue
+		}
+		if nestedMap, ok := nestedVal.(map[string]any); ok {
+			stripCellLinks(nestedMap)
+		}
+	}
+}
+
+func stripRowLinks(row map[string]any) {
+	for _, cellVal := range row {
+		stripCellLinks(cellVal)
+	}
+}
+
+// StripDrillLinks removes drill link arrays ("links") from all cells in a
+// Looker json_detail query response (data, totals_data, row_totals, subtotals_data)
+// as well as bulky unused field metadata ("drill_fields", "sql", "sql_case", "can",
+// "source_file", "source_file_path", "lookml_link") so large query results do not
+// exceed MCP host tool response size limits.
+func StripDrillLinks(detailResp map[string]any) {
+	if detailResp == nil {
+		return
+	}
+	if dataRows, ok := detailResp["data"].([]any); ok {
+		for _, r := range dataRows {
+			if rowMap, ok := r.(map[string]any); ok {
+				stripRowLinks(rowMap)
+			}
+		}
+	}
+	if totalsMap, ok := detailResp["totals_data"].(map[string]any); ok {
+		stripRowLinks(totalsMap)
+	}
+	if rowTotalsMap, ok := detailResp["row_totals"].(map[string]any); ok {
+		stripRowLinks(rowTotalsMap)
+	}
+	if subtotalsMap, ok := detailResp["subtotals_data"].(map[string]any); ok {
+		for _, groupRows := range subtotalsMap {
+			if rows, ok := groupRows.([]any); ok {
+				for _, r := range rows {
+					if rowMap, ok := r.(map[string]any); ok {
+						stripRowLinks(rowMap)
+					}
+				}
+			}
+		}
+	} else if subtotalsSlice, ok := detailResp["subtotals_data"].([]any); ok {
+		for _, r := range subtotalsSlice {
+			if rowMap, ok := r.(map[string]any); ok {
+				stripRowLinks(rowMap)
+			}
+		}
+	}
+	if fieldsMap, ok := detailResp["fields"].(map[string]any); ok {
+		for _, categoryVal := range fieldsMap {
+			if fieldList, ok := categoryVal.([]any); ok {
+				for _, f := range fieldList {
+					if fieldMap, ok := f.(map[string]any); ok {
+						delete(fieldMap, "drill_fields")
+						delete(fieldMap, "sql")
+						delete(fieldMap, "sql_case")
+						delete(fieldMap, "can")
+						delete(fieldMap, "source_file")
+						delete(fieldMap, "source_file_path")
+						delete(fieldMap, "lookml_link")
+					}
+				}
+			}
+		}
+	}
 }
 
 // SearchLookmlDashboards calls GET /4.0/dashboards/lookml/search and unmarshals

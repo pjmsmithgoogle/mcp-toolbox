@@ -120,3 +120,37 @@ func TestBuildWriteQueryWithOverrides(t *testing.T) {
 	}
 }
 
+func TestInitializeIncludesGenerateDrillLinksParameter(t *testing.T) {
+	ctx, err := testutils.ContextWithNewLogger()
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	cfg := lkr.Config{
+		ConfigBase: tools.ConfigBase{
+			Name:        "run_saved_query",
+			Description: "Execute a saved query",
+		},
+		Type:   "looker-run-saved-query",
+		Source: "looker-source",
+	}
+	tool, err := cfg.Initialize(ctx)
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	manifest := tool.StaticManifest()
+	var found bool
+	for _, p := range manifest.Parameters {
+		if p.Name == "generate_drill_links" {
+			found = true
+			if p.Type != "boolean" {
+				t.Errorf("expected generate_drill_links type boolean, got %q", p.Type)
+			}
+			if p.Required {
+				t.Errorf("expected generate_drill_links to be optional (Required=false)")
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected generate_drill_links parameter in tool manifest, got %+v", manifest.Parameters)
+	}
+}

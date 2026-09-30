@@ -427,3 +427,83 @@ func TestExtractAndInjectComponentGroupIDs(t *testing.T) {
 	}
 }
 
+func TestPruneDashboardPayload(t *testing.T) {
+	rawDash := map[string]any{
+		"id":    "30",
+		"title": "Large Dashboard",
+		"can":   map[string]any{"show": true, "update": true},
+		"dashboard_elements": []any{
+			map[string]any{
+				"id":    "1",
+				"title": "Revenue Tile",
+				"can":   map[string]any{"explore": true},
+				"query": map[string]any{
+					"id":            "999",
+					"filter_config": map[string]any{"huge": "blob"},
+				},
+				"result_maker": map[string]any{
+					"id":         "500",
+					"vis_config": map[string]any{"type": "looker_column"},
+					"query": map[string]any{
+						"id":            "999",
+						"client_id":     "abc123slug",
+						"model":         "thelook",
+						"view":          "order_items",
+						"vis_config":    map[string]any{"type": "looker_column"},
+						"filter_config": map[string]any{"huge": "blob"},
+						"can":           map[string]any{"run": true},
+					},
+				},
+			},
+		},
+		"dashboard_filters": []any{
+			map[string]any{
+				"id":    "10",
+				"name":  "Date",
+				"title": "Date",
+				"can":   map[string]any{"index": true},
+				"field": map[string]any{
+					"name":         "orders.created_date",
+					"type":         "date_date",
+					"sql":          "${TABLE}.created_at",
+					"drill_fields": []any{"orders.id"},
+					"can":          map[string]any{"filter": true},
+				},
+			},
+		},
+	}
+
+	pruned := lkr.PruneDashboardPayload(rawDash).(map[string]any)
+	if _, hasCan := pruned["can"]; hasCan {
+		t.Errorf("expected top-level can to be pruned")
+	}
+
+	el := pruned["dashboard_elements"].([]any)[0].(map[string]any)
+	if _, hasQuery := el["query"]; hasQuery {
+		t.Errorf("expected duplicate element.query to be pruned when result_maker.query exists")
+	}
+	rm := el["result_maker"].(map[string]any)
+	rmQuery := rm["query"].(map[string]any)
+	if _, hasFilterCfg := rmQuery["filter_config"]; hasFilterCfg {
+		t.Errorf("expected result_maker.query.filter_config to be pruned")
+	}
+	if _, hasDupVisCfg := rmQuery["vis_config"]; hasDupVisCfg {
+		t.Errorf("expected duplicate result_maker.query.vis_config to be pruned when result_maker.vis_config exists")
+	}
+	if rmQuery["client_id"] != "abc123slug" {
+		t.Errorf("expected result_maker.query.client_id to be preserved, got %v", rmQuery["client_id"])
+	}
+
+	filter := pruned["dashboard_filters"].([]any)[0].(map[string]any)
+	field := filter["field"].(map[string]any)
+	for _, stripped := range []string{"sql", "drill_fields", "can"} {
+		if _, exists := field[stripped]; exists {
+			t.Errorf("expected filter.field.%s to be pruned", stripped)
+		}
+	}
+	if field["name"] != "orders.created_date" || field["type"] != "date_date" {
+		t.Errorf("expected essential filter.field properties to be preserved, got %v", field)
+	}
+}
+
+

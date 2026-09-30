@@ -545,15 +545,13 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 							entry["label"] = label
 						}
 					}
-					inlineExtensions[extID] = entry
 					inlineExtensions["db::"+rawID] = entry
-					inlineExtensions[rawID] = entry
 				}
 			}
 		}
 	}
 
-	dashboardPayload := InjectComponentGroupIDs(dashboard, ExtractComponentGroupIDs(rawDashboard))
+	dashboardPayload := PruneDashboardPayload(InjectComponentGroupIDs(dashboard, ExtractComponentGroupIDs(rawDashboard)))
 
 	dashboardData := map[string]any{
 		"dashboard": dashboardPayload,
@@ -567,9 +565,112 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 
 	return map[string]any{
 		"dashboardData": dashboardData,
-		"dashboard":     dashboardPayload,
 		"dashboard_id":  dashboardId,
 	}, nil
+}
+
+func pruneQueryMap(qMap map[string]any) {
+	if qMap == nil {
+		return
+	}
+	delete(qMap, "can")
+	delete(qMap, "filter_config")
+	delete(qMap, "runtime")
+}
+
+// PruneDashboardPayload strips bulky, unused Looker API metadata (such as
+// permission maps, explore UI filter_config blobs, LookML SQL definitions,
+// drill_fields, and duplicate nested query objects) from a dashboard payload
+// so large multi-tile dashboards stay well within MCP host tool response limits.
+func PruneDashboardPayload(dashboard any) any {
+	var dashMap map[string]any
+	if existingMap, ok := dashboard.(map[string]any); ok {
+		dashMap = existingMap
+	} else {
+		rawBytes, err := json.Marshal(dashboard)
+		if err != nil {
+			return dashboard
+		}
+		if err := json.Unmarshal(rawBytes, &dashMap); err != nil {
+			return dashboard
+		}
+	}
+
+	delete(dashMap, "can")
+
+	if elements, ok := dashMap["dashboard_elements"].([]any); ok {
+		for _, rawEl := range elements {
+			elMap, ok := rawEl.(map[string]any)
+			if !ok {
+				continue
+			}
+			delete(elMap, "can")
+
+			if rmMap, ok := elMap["result_maker"].(map[string]any); ok {
+				delete(rmMap, "can")
+				if rmQuery, ok := rmMap["query"].(map[string]any); ok {
+					pruneQueryMap(rmQuery)
+					if rmMap["vis_config"] != nil {
+						delete(rmQuery, "vis_config")
+					}
+					delete(elMap, "query")
+				}
+			}
+			if elQuery, ok := elMap["query"].(map[string]any); ok {
+				pruneQueryMap(elQuery)
+			}
+			if lookMap, ok := elMap["look"].(map[string]any); ok {
+				delete(lookMap, "can")
+				delete(lookMap, "space")
+				delete(lookMap, "folder")
+				delete(lookMap, "user")
+				if rmMap, ok := elMap["result_maker"].(map[string]any); ok && rmMap["query"] != nil {
+					delete(lookMap, "query")
+				} else if lookQuery, ok := lookMap["query"].(map[string]any); ok {
+					pruneQueryMap(lookQuery)
+				}
+			}
+		}
+	}
+
+	if filters, ok := dashMap["dashboard_filters"].([]any); ok {
+		for _, rawFilter := range filters {
+			fMap, ok := rawFilter.(map[string]any)
+			if !ok {
+				continue
+			}
+			delete(fMap, "can")
+			if fieldMap, ok := fMap["field"].(map[string]any); ok {
+				delete(fieldMap, "can")
+				delete(fieldMap, "sql")
+				delete(fieldMap, "sql_case")
+				delete(fieldMap, "drill_fields")
+				delete(fieldMap, "source_file")
+				delete(fieldMap, "source_file_path")
+				delete(fieldMap, "lookml_link")
+				delete(fieldMap, "user_attribute_filter_types")
+			}
+		}
+	}
+
+	if layouts, ok := dashMap["dashboard_layouts"].([]any); ok {
+		for _, rawLayout := range layouts {
+			lMap, ok := rawLayout.(map[string]any)
+			if !ok {
+				continue
+			}
+			delete(lMap, "can")
+			if comps, ok := lMap["dashboard_layout_components"].([]any); ok {
+				for _, rawComp := range comps {
+					if cMap, ok := rawComp.(map[string]any); ok {
+						delete(cMap, "can")
+					}
+				}
+			}
+		}
+	}
+
+	return dashMap
 }
 
 // ExtractComponentGroupIDs extracts a map of layout component ID to group_id

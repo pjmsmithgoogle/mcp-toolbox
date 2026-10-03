@@ -587,12 +587,31 @@ func RunSavedQueryWithDrillLinks(ctx context.Context, l *v4.LookerSDK, queryId s
 	return result, err
 }
 
+// MaxMCPPayloadBytes is the maximum serialized JSON byte size for an MCP App
+// tool response (900 KB) so responses stay safely under MCP host limits
+// (such as Claude Desktop's 1 MB tool result cap).
+const MaxMCPPayloadBytes = 900 * 1024
+
+// ExceedsMCPPayloadLimit checks whether the JSON-serialized form of payload
+// exceeds maxBytes (defaulting to MaxMCPPayloadBytes when maxBytes <= 0).
+func ExceedsMCPPayloadLimit(payload any, maxBytes int) (int, bool) {
+	if maxBytes <= 0 {
+		maxBytes = MaxMCPPayloadBytes
+	}
+	rawBytes, err := json.Marshal(payload)
+	if err != nil {
+		return 0, false
+	}
+	return len(rawBytes), len(rawBytes) > maxBytes
+}
+
 func stripCellLinks(val any) {
 	cellMap, ok := val.(map[string]any)
 	if !ok {
 		return
 	}
 	delete(cellMap, "links")
+	delete(cellMap, "filterable_value")
 	for k, nestedVal := range cellMap {
 		if k == "value" {
 			continue
@@ -609,14 +628,32 @@ func stripRowLinks(row map[string]any) {
 	}
 }
 
-// StripDrillLinks removes drill link arrays ("links") from all cells in a
-// Looker json_detail query response (data, totals_data, row_totals, subtotals_data)
-// as well as bulky unused field metadata ("drill_fields", "sql", "sql_case", "can",
-// "source_file", "source_file_path", "lookml_link") so large query results do not
-// exceed MCP host tool response size limits.
+// StripDrillLinks removes drill link arrays ("links") and unused "filterable_value"
+// strings from all cells in a Looker json_detail query response (data, totals_data,
+// row_totals, subtotals_data, pivots[].metadata) as well as bulky unused field and
+// top-level metadata so large query results do not exceed MCP host tool response size limits.
 func StripDrillLinks(detailResp map[string]any) {
 	if detailResp == nil {
 		return
+	}
+	for _, topKey := range []string{
+		"sql",
+		"sql_explain",
+		"applied_filters",
+		"added_params",
+		"aggregate_table_used_info",
+		"drill_menu_build_time",
+		"always_filter",
+		"conditionally_filter_applied",
+		"applied_filter_expression",
+		"null_sort_treatment",
+		"supports_pivot_in_db",
+		"expired",
+		"ran_at",
+		"from_cache",
+		"result_source",
+	} {
+		delete(detailResp, topKey)
 	}
 	if dataRows, ok := detailResp["data"].([]any); ok {
 		for _, r := range dataRows {
@@ -648,18 +685,49 @@ func StripDrillLinks(detailResp map[string]any) {
 			}
 		}
 	}
+	if pivotsSlice, ok := detailResp["pivots"].([]any); ok {
+		for _, p := range pivotsSlice {
+			if pivotMap, ok := p.(map[string]any); ok {
+				if metaMap, ok := pivotMap["metadata"].(map[string]any); ok {
+					stripRowLinks(metaMap)
+				}
+			}
+		}
+	}
 	if fieldsMap, ok := detailResp["fields"].(map[string]any); ok {
 		for _, categoryVal := range fieldsMap {
 			if fieldList, ok := categoryVal.([]any); ok {
 				for _, f := range fieldList {
 					if fieldMap, ok := f.(map[string]any); ok {
-						delete(fieldMap, "drill_fields")
-						delete(fieldMap, "sql")
-						delete(fieldMap, "sql_case")
-						delete(fieldMap, "can")
-						delete(fieldMap, "source_file")
-						delete(fieldMap, "source_file_path")
-						delete(fieldMap, "lookml_link")
+						for _, fieldKey := range []string{
+							"drill_fields",
+							"sql",
+							"sql_case",
+							"can",
+							"source_file",
+							"source_file_path",
+							"lookml_link",
+							"user_attribute_filter_types",
+							"available_custom_timeframes",
+							"liquid_expression",
+							"lookml_expression",
+							"synonyms",
+							"tags",
+							"times_used",
+							"original_view",
+							"field_group_label",
+							"field_group_variant",
+							"parameter",
+							"permanent",
+							"scope",
+							"suggest_dimension",
+							"suggest_explore",
+							"suggestable",
+							"suggestions",
+							"enumerations",
+						} {
+							delete(fieldMap, fieldKey)
+						}
 					}
 				}
 			}

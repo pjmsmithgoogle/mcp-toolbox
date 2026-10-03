@@ -442,16 +442,21 @@ func TestPruneDashboardPayload(t *testing.T) {
 					"filter_config": map[string]any{"huge": "blob"},
 				},
 				"result_maker": map[string]any{
-					"id":         "500",
-					"vis_config": map[string]any{"type": "looker_column"},
+					"id": "500",
+					"vis_config": map[string]any{
+						"type":         "looker_column",
+						"query_fields": map[string]any{"measures": []any{"huge"}},
+					},
 					"query": map[string]any{
-						"id":            "999",
-						"client_id":     "abc123slug",
-						"model":         "thelook",
-						"view":          "order_items",
-						"vis_config":    map[string]any{"type": "looker_column"},
-						"filter_config": map[string]any{"huge": "blob"},
-						"can":           map[string]any{"run": true},
+						"id":                 "999",
+						"client_id":          "abc123slug",
+						"model":              "thelook",
+						"view":               "order_items",
+						"vis_config":         map[string]any{"type": "looker_column"},
+						"filter_config":      map[string]any{"huge": "blob"},
+						"expanded_share_url": "https://looker.example.com/explore/thelook/order_items?fields=...",
+						"url":                "https://looker.example.com/x/abc123slug",
+						"can":                map[string]any{"run": true},
 					},
 				},
 			},
@@ -483,12 +488,15 @@ func TestPruneDashboardPayload(t *testing.T) {
 		t.Errorf("expected duplicate element.query to be pruned when result_maker.query exists")
 	}
 	rm := el["result_maker"].(map[string]any)
-	rmQuery := rm["query"].(map[string]any)
-	if _, hasFilterCfg := rmQuery["filter_config"]; hasFilterCfg {
-		t.Errorf("expected result_maker.query.filter_config to be pruned")
+	rmVisCfg := rm["vis_config"].(map[string]any)
+	if _, hasQueryFields := rmVisCfg["query_fields"]; hasQueryFields {
+		t.Errorf("expected result_maker.vis_config.query_fields to be pruned")
 	}
-	if _, hasDupVisCfg := rmQuery["vis_config"]; hasDupVisCfg {
-		t.Errorf("expected duplicate result_maker.query.vis_config to be pruned when result_maker.vis_config exists")
+	rmQuery := rm["query"].(map[string]any)
+	for _, stripped := range []string{"filter_config", "vis_config", "expanded_share_url", "url", "can"} {
+		if _, exists := rmQuery[stripped]; exists {
+			t.Errorf("expected result_maker.query.%s to be pruned", stripped)
+		}
 	}
 	if rmQuery["client_id"] != "abc123slug" {
 		t.Errorf("expected result_maker.query.client_id to be preserved, got %v", rmQuery["client_id"])

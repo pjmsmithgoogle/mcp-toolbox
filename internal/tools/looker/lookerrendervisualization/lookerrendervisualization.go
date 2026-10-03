@@ -828,7 +828,7 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 			"query":     queryMeta,
 		}
 
-		return map[string]any{
+		resultPayload := map[string]any{
 			"visualizationData":  visualizationData,
 			"vis_config":         visConfigObj,
 			"query_id":           queryIdVal,
@@ -836,7 +836,8 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 			"client_id":          queryMeta["client_id"],
 			"share_url":          queryMeta["share_url"],
 			"expanded_share_url": queryMeta["expanded_share_url"],
-		}, nil
+		}
+		return applyVisualizationPayloadLimit(resultPayload, visualizationData), nil
 	}
 
 	// 2. Inline query path with json_detail
@@ -948,7 +949,7 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		},
 	}
 
-	return map[string]any{
+	resultPayload := map[string]any{
 		"visualizationData":  visualizationData,
 		"model":              wq.Model,
 		"explore":            wq.View,
@@ -958,7 +959,54 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		"client_id":          slug,
 		"share_url":          shareUrl,
 		"expanded_share_url": expandedShareUrl,
-	}, nil
+	}
+	return applyVisualizationPayloadLimit(resultPayload, visualizationData), nil
+}
+
+func applyVisualizationPayloadLimit(resultPayload, visualizationData map[string]any) tools.StructuredToolResult {
+	if _, tooLarge := lookercommon.ExceedsMCPPayloadLimit(resultPayload, lookercommon.MaxMCPPayloadBytes); tooLarge {
+		errMsg := "This visualization's query result is too large to display here. Open it in Looker Explore to view the full result."
+		if qrMap, ok := visualizationData["queryResult"].(map[string]any); ok {
+			qrMap["data"] = []any{}
+			delete(qrMap, "totals_data")
+			delete(qrMap, "pivots")
+		}
+		visualizationData["response_too_large"] = true
+		visualizationData["error"] = errMsg
+		resultPayload["response_too_large"] = true
+		resultPayload["error"] = errMsg
+		return tools.StructuredToolResult{
+			Content:           resultPayload,
+			StructuredContent: resultPayload,
+		}
+	}
+
+	var rowCount int
+	if qrMap, ok := visualizationData["queryResult"].(map[string]any); ok {
+		if rows, ok := qrMap["data"].([]any); ok {
+			rowCount = len(rows)
+		}
+	}
+	summary := map[string]any{
+		"query_id":  resultPayload["query_id"],
+		"slug":      resultPayload["slug"],
+		"client_id": resultPayload["client_id"],
+		"share_url": resultPayload["share_url"],
+		"title":     visualizationData["title"],
+		"row_count": rowCount,
+		"status":    "rendered_in_ui",
+	}
+	if modelVal, ok := resultPayload["model"]; ok && modelVal != nil && modelVal != "" {
+		summary["model"] = modelVal
+	}
+	if exploreVal, ok := resultPayload["explore"]; ok && exploreVal != nil && exploreVal != "" {
+		summary["explore"] = exploreVal
+	}
+
+	return tools.StructuredToolResult{
+		Content:           summary,
+		StructuredContent: resultPayload,
+	}
 }
 
 func (t Tool) RequiresClientAuthorization(source sources.Source) (bool, error) {

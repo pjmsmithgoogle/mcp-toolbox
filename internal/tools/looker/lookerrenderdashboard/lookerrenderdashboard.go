@@ -563,9 +563,57 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 
 	logger.DebugContext(ctx, "dashboardData prepared", "dashboard_id", dashboardId, "inline_extensions_count", len(inlineExtensions))
 
-	return map[string]any{
+	var dashTitle string
+	if dashboard.Title != nil {
+		dashTitle = *dashboard.Title
+	}
+	var tileCount int
+	if dashboard.DashboardElements != nil {
+		tileCount = len(*dashboard.DashboardElements)
+	}
+	var filterCount int
+	if dashboard.DashboardFilters != nil {
+		filterCount = len(*dashboard.DashboardFilters)
+	}
+
+	resultPayload := map[string]any{
 		"dashboardData": dashboardData,
 		"dashboard_id":  dashboardId,
+	}
+	if _, tooLarge := lookercommon.ExceedsMCPPayloadLimit(resultPayload, lookercommon.MaxMCPPayloadBytes); tooLarge {
+		errMsg := "This dashboard is too large to display here. Open it in Looker to view the full dashboard."
+		tooLargePayload := map[string]any{
+			"dashboard_id":       dashboardId,
+			"title":              dashTitle,
+			"response_too_large": true,
+			"error":              errMsg,
+			"dashboardData": map[string]any{
+				"dashboard_id":       dashboardId,
+				"title":              dashTitle,
+				"response_too_large": true,
+				"error":              errMsg,
+			},
+		}
+		return tools.StructuredToolResult{
+			Content:           tooLargePayload,
+			StructuredContent: tooLargePayload,
+		}, nil
+	}
+
+	summary := map[string]any{
+		"dashboard_id": dashboardId,
+		"title":        dashTitle,
+		"tile_count":   tileCount,
+		"filter_count": filterCount,
+		"status":       "rendered_in_ui",
+	}
+	if len(filtersMap) > 0 {
+		summary["applied_filters"] = filtersMap
+	}
+
+	return tools.StructuredToolResult{
+		Content:           summary,
+		StructuredContent: resultPayload,
 	}, nil
 }
 
@@ -576,12 +624,18 @@ func pruneQueryMap(qMap map[string]any) {
 	delete(qMap, "can")
 	delete(qMap, "filter_config")
 	delete(qMap, "runtime")
+	delete(qMap, "expanded_share_url")
+	delete(qMap, "url")
+	if vcMap, ok := qMap["vis_config"].(map[string]any); ok {
+		delete(vcMap, "query_fields")
+	}
 }
 
 // PruneDashboardPayload strips bulky, unused Looker API metadata (such as
-// permission maps, explore UI filter_config blobs, LookML SQL definitions,
-// drill_fields, and duplicate nested query objects) from a dashboard payload
-// so large multi-tile dashboards stay well within MCP host tool response limits.
+// permission maps, explore UI filter_config blobs, expanded_share_url/url,
+// LookML SQL definitions, drill_fields, and duplicate nested query objects)
+// from a dashboard payload so large multi-tile dashboards stay well within
+// MCP host tool response limits.
 func PruneDashboardPayload(dashboard any) any {
 	var dashMap map[string]any
 	if existingMap, ok := dashboard.(map[string]any); ok {
@@ -608,6 +662,9 @@ func PruneDashboardPayload(dashboard any) any {
 
 			if rmMap, ok := elMap["result_maker"].(map[string]any); ok {
 				delete(rmMap, "can")
+				if rmVisCfg, ok := rmMap["vis_config"].(map[string]any); ok {
+					delete(rmVisCfg, "query_fields")
+				}
 				if rmQuery, ok := rmMap["query"].(map[string]any); ok {
 					pruneQueryMap(rmQuery)
 					if rmMap["vis_config"] != nil {
@@ -641,14 +698,28 @@ func PruneDashboardPayload(dashboard any) any {
 			}
 			delete(fMap, "can")
 			if fieldMap, ok := fMap["field"].(map[string]any); ok {
-				delete(fieldMap, "can")
-				delete(fieldMap, "sql")
-				delete(fieldMap, "sql_case")
-				delete(fieldMap, "drill_fields")
-				delete(fieldMap, "source_file")
-				delete(fieldMap, "source_file_path")
-				delete(fieldMap, "lookml_link")
-				delete(fieldMap, "user_attribute_filter_types")
+				for _, fieldKey := range []string{
+					"can",
+					"sql",
+					"sql_case",
+					"drill_fields",
+					"source_file",
+					"source_file_path",
+					"lookml_link",
+					"user_attribute_filter_types",
+					"available_custom_timeframes",
+					"liquid_expression",
+					"lookml_expression",
+					"synonyms",
+					"tags",
+					"times_used",
+					"field_group_label",
+					"field_group_variant",
+					"permanent",
+					"scope",
+				} {
+					delete(fieldMap, fieldKey)
+				}
 			}
 		}
 	}

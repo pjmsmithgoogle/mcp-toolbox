@@ -191,6 +191,50 @@ func BuildWriteQueryWithOverrides(baseQuery v4.Query, filterOverrides map[string
 	}
 }
 
+func sortsMatchBaseQuery(sortOverrides []string, baseSorts *[]string) bool {
+	if len(sortOverrides) == 0 {
+		return true
+	}
+	if baseSorts == nil || len(*baseSorts) != len(sortOverrides) {
+		return false
+	}
+	for i := range sortOverrides {
+		if strings.TrimSpace(sortOverrides[i]) != strings.TrimSpace((*baseSorts)[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func applySavedQueryPayloadLimit(result map[string]any) tools.StructuredToolResult {
+	if _, tooLarge := lookercommon.ExceedsMCPPayloadLimit(result, lookercommon.MaxMCPPayloadBytes); tooLarge {
+		result["data"] = []any{}
+		delete(result, "totals_data")
+		delete(result, "pivots")
+		result["status"] = "error"
+		result["response_too_large"] = true
+		result["error"] = "This query returned too much data to display here. Open it in Looker Explore to view the full result."
+		return tools.StructuredToolResult{
+			Content:           result,
+			StructuredContent: result,
+		}
+	}
+
+	var rowCount int
+	if rows, ok := result["data"].([]any); ok {
+		rowCount = len(rows)
+	}
+	summary := map[string]any{
+		"query_id":  result["query_id"],
+		"row_count": rowCount,
+		"status":    result["status"],
+	}
+	return tools.StructuredToolResult{
+		Content:           summary,
+		StructuredContent: result,
+	}
+}
+
 func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.ParamValues, accessToken tools.AccessToken) (any, util.ToolboxError) {
 	source, ok := s.(compatibleSource)
 	if !ok {
@@ -275,11 +319,19 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 			return nil, util.ProcessGeneralError(lookercommon.ExtractLookerErrorMessage(qErr))
 		}
 
-		wq := BuildWriteQueryWithOverrides(baseQuery, filterOverrides, sortOverrides)
-		if escErr := lookercommon.EscapeUnquotedParameterFilters(ctx, sdk, &wq, source.LookerApiSettings()); escErr != nil {
-			logger.WarnContext(ctx, "skipping unquoted-parameter escape, metadata lookup failed", "error", escErr)
+		if len(filterOverrides) == 0 && sortsMatchBaseQuery(sortOverrides, baseQuery.Sorts) {
+			resp, rErr = lookercommon.RunSavedQueryWithDrillLinks(ctx, sdk, queryId, resultFormat, generateDrillLinks, source.LookerApiSettings())
+			if rErr != nil {
+				wq := BuildWriteQueryWithOverrides(baseQuery, nil, nil)
+				resp, rErr = lookercommon.RunInlineQueryWithDrillLinks(ctx, sdk, &wq, resultFormat, generateDrillLinks, source.LookerApiSettings())
+			}
+		} else {
+			wq := BuildWriteQueryWithOverrides(baseQuery, filterOverrides, sortOverrides)
+			if escErr := lookercommon.EscapeUnquotedParameterFilters(ctx, sdk, &wq, source.LookerApiSettings()); escErr != nil {
+				logger.WarnContext(ctx, "skipping unquoted-parameter escape, metadata lookup failed", "error", escErr)
+			}
+			resp, rErr = lookercommon.RunInlineQueryWithDrillLinks(ctx, sdk, &wq, resultFormat, generateDrillLinks, source.LookerApiSettings())
 		}
-		resp, rErr = lookercommon.RunInlineQueryWithDrillLinks(ctx, sdk, &wq, resultFormat, generateDrillLinks, source.LookerApiSettings())
 	} else {
 		// 1. Attempt to run saved query by ID or slug via API endpoint
 		resp, rErr = lookercommon.RunSavedQueryWithDrillLinks(ctx, sdk, queryId, resultFormat, generateDrillLinks, source.LookerApiSettings())
@@ -325,7 +377,7 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		if visConfigObj != nil {
 			result["vis_config"] = visConfigObj
 		}
-		return result, nil
+		return applySavedQueryPayloadLimit(result), nil
 	}
 
 	var rawData []any
@@ -341,7 +393,7 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 	if visConfigObj != nil {
 		result["vis_config"] = visConfigObj
 	}
-	return result, nil
+	return applySavedQueryPayloadLimit(result), nil
 }
 
 func (t Tool) RequiresClientAuthorization(source sources.Source) (bool, error) {

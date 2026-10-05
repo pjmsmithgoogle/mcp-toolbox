@@ -695,13 +695,15 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 				}
 			}
 
-			resp, rErr = lookercommon.RunInlineQuery(ctx, sdk, wq, "json_detail", source.LookerApiSettings())
+			generateDrillLinks := false
+			resp, rErr = lookercommon.RunInlineQueryWithDrillLinks(ctx, sdk, wq, "json_detail", &generateDrillLinks, source.LookerApiSettings())
 			if rErr != nil && !hasOverrides {
 				logger.WarnContext(ctx, "error running inline query from query definition, falling back to saved query", "error", rErr)
-				resp, rErr = lookercommon.RunSavedQuery(ctx, sdk, queryIdVal, "json_detail", source.LookerApiSettings())
+				resp, rErr = lookercommon.RunSavedQueryWithDrillLinks(ctx, sdk, queryIdVal, "json_detail", &generateDrillLinks, source.LookerApiSettings())
 			}
 		} else {
-			resp, rErr = lookercommon.RunSavedQuery(ctx, sdk, queryIdVal, "json_detail", source.LookerApiSettings())
+			generateDrillLinks := false
+			resp, rErr = lookercommon.RunSavedQueryWithDrillLinks(ctx, sdk, queryIdVal, "json_detail", &generateDrillLinks, source.LookerApiSettings())
 		}
 		if rErr != nil {
 			if strings.Contains(rErr.Error(), "status=401") {
@@ -714,6 +716,7 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		if err := json.Unmarshal([]byte(resp), &detailResp); err != nil {
 			return nil, util.NewClientServerError("error unmarshaling json_detail response", http.StatusInternalServerError, err)
 		}
+		lookercommon.StripDrillLinks(detailResp)
 
 		if (visConfigObj == nil || visConfigObj == "") && queryDef != nil && queryDef.VisConfig != nil {
 			visConfigObj = queryDef.VisConfig
@@ -832,9 +835,6 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 
 		resultPayload := map[string]any{
 			"visualizationData":  visualizationData,
-			"data":               detailResp["data"],
-			"fields":             detailResp["fields"],
-			"pivots":             detailResp["pivots"],
 			"vis_config":         visConfigObj,
 			"query_id":           queryIdVal,
 			"slug":               queryMeta["slug"],
@@ -889,9 +889,10 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		logger.WarnContext(ctx, "could not create query in looker", "error", cErr)
 	}
 
-	resp, err := lookercommon.RunInlineQuery(ctx, sdk, wq, "json_detail", source.LookerApiSettings())
+	generateDrillLinks := false
+	resp, err := lookercommon.RunInlineQueryWithDrillLinks(ctx, sdk, wq, "json_detail", &generateDrillLinks, source.LookerApiSettings())
 	if err != nil {
-		resp, err = lookercommon.RunInlineQuery(ctx, sdk, wq, "json", source.LookerApiSettings())
+		resp, err = lookercommon.RunInlineQueryWithDrillLinks(ctx, sdk, wq, "json", &generateDrillLinks, source.LookerApiSettings())
 	}
 	if err != nil {
 		if strings.Contains(err.Error(), "status=401") {
@@ -912,6 +913,7 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 	var errorsObj any
 
 	if detailMap, ok := rawParsed.(map[string]any); ok {
+		lookercommon.StripDrillLinks(detailMap)
 		if d, ok := detailMap["data"].([]any); ok {
 			dataList = d
 		}
@@ -961,8 +963,6 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 
 	resultPayload := map[string]any{
 		"visualizationData":  visualizationData,
-		"data":               dataList,
-		"fields":             fieldsObj,
 		"model":              wq.Model,
 		"explore":            wq.View,
 		"vis_config":         visConfigObj,

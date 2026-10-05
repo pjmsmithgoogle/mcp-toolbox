@@ -339,7 +339,10 @@ func ProcessQueryArgs(ctx context.Context, params parameters.ParamValues) (*v4.W
 		return nil, fmt.Errorf("can't convert sorts to array of strings: %s", err)
 	}
 	sorts := s.([]string)
-	limit := fmt.Sprintf("%v", paramsMap["limit"].(int))
+	limit := "500"
+	if l, ok := paramsMap["limit"].(int); ok && l > 0 {
+		limit = fmt.Sprintf("%d", l)
+	}
 
 	var tz string
 	if paramsMap["tz"] != nil {

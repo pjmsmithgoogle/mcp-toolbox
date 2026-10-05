@@ -56,8 +56,9 @@ type compatibleSource interface {
 
 type Config struct {
 	tools.ConfigBase `yaml:",inline"`
-	Type             string `yaml:"type" validate:"required"`
-	Source           string `yaml:"source" validate:"required"`
+	Type             string                 `yaml:"type" validate:"required"`
+	Source           string                 `yaml:"source" validate:"required"`
+	Annotations      *tools.ToolAnnotations `yaml:"annotations,omitempty"`
 }
 
 // validate interface
@@ -227,6 +228,35 @@ func sortsMatchBaseQuery(sortOverrides []string, baseSorts *[]string) bool {
 	return true
 }
 
+func applySavedQueryPayloadLimit(result map[string]any) tools.StructuredToolResult {
+	if _, tooLarge := lookercommon.ExceedsMCPPayloadLimit(result, lookercommon.MaxMCPPayloadBytes); tooLarge {
+		result["data"] = []any{}
+		delete(result, "totals_data")
+		delete(result, "pivots")
+		result["status"] = "error"
+		result["response_too_large"] = true
+		result["error"] = "This query returned too much data to display here. Open it in Looker Explore to view the full result."
+		return tools.StructuredToolResult{
+			Content:           result,
+			StructuredContent: result,
+		}
+	}
+
+	var rowCount int
+	if rows, ok := result["data"].([]any); ok {
+		rowCount = len(rows)
+	}
+	summary := map[string]any{
+		"query_id":  result["query_id"],
+		"row_count": rowCount,
+		"status":    result["status"],
+	}
+	return tools.StructuredToolResult{
+		Content:           summary,
+		StructuredContent: result,
+	}
+}
+
 func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.ParamValues, accessToken tools.AccessToken) (any, util.ToolboxError) {
 	source, ok := s.(compatibleSource)
 	if !ok {
@@ -366,7 +396,7 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 			if visConfigObj != nil {
 				result["vis_config"] = visConfigObj
 			}
-			return result, nil
+			return applySavedQueryPayloadLimit(result), nil
 		}
 
 		var rawData []any
@@ -374,12 +404,13 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 			return nil, util.NewClientServerError("error unmarshaling query response", http.StatusInternalServerError, err)
 		}
 		if visConfigObj != nil {
-			return map[string]any{
+			result := map[string]any{
 				"data":       rawData,
 				"query_id":   queryId,
 				"status":     "success",
 				"vis_config": visConfigObj,
-			}, nil
+			}
+			return applySavedQueryPayloadLimit(result), nil
 		}
 		return rawData, nil
 	}
@@ -436,7 +467,7 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		if visConfigObj != nil {
 			result["vis_config"] = visConfigObj
 		}
-		return result, nil
+		return applySavedQueryPayloadLimit(result), nil
 	}
 
 	var data []any

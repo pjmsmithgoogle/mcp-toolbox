@@ -764,3 +764,13 @@ func TestStripDrillLinks(t *testing.T) {
 		t.Errorf("expected essential field metadata to be preserved, got %v", measureField)
 	}
 }
+
+func TestExceedsMCPPayloadLimit(t *testing.T) {
+	small := map[string]any{"status": "success"}
+	if size, exceeded := lookercommon.ExceedsMCPPayloadLimit(small, 1024); exceeded || size == 0 {
+		t.Errorf("expected small payload not to exceed 1024 bytes, got size=%d exceeded=%v", size, exceeded)
+	}
+	if _, exceeded := lookercommon.ExceedsMCPPayloadLimit(small, 5); !exceeded {
+		t.Errorf("expected small payload to exceed 5 bytes")
+	}
+}

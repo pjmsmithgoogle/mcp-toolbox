@@ -775,3 +775,21 @@ func ExtractLookerErrorMessage(err error) error {
 
 	return fmt.Errorf("%s", msg)
 }
+
+// MaxMCPPayloadBytes is the maximum serialized JSON byte size for an MCP App
+// tool response (900 KB) so responses stay safely under MCP host limits
+// (such as Claude Desktop's 1 MB tool result cap).
+const MaxMCPPayloadBytes = 900 * 1024
+
+// ExceedsMCPPayloadLimit checks whether the JSON-serialized form of payload
+// exceeds maxBytes (defaulting to MaxMCPPayloadBytes when maxBytes <= 0).
+func ExceedsMCPPayloadLimit(payload any, maxBytes int) (int, bool) {
+	if maxBytes <= 0 {
+		maxBytes = MaxMCPPayloadBytes
+	}
+	rawBytes, err := json.Marshal(payload)
+	if err != nil {
+		return 0, false
+	}
+	return len(rawBytes), len(rawBytes) > maxBytes
+}

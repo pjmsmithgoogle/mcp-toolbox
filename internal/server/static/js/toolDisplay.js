@@ -679,15 +679,11 @@ function setAppDisplayMode(mcpContainer, iframeElement, mode) {
         iframe.contentWindow.postMessage({
             jsonrpc: '2.0',
             method: 'ui/notifications/host-context-changed',
-            params: {
-                displayMode: mode,
-                availableDisplayModes: Array.from(SUPPORTED_DISPLAY_MODES)
-            }
+            params: { displayMode: mode }
         }, '*');
         iframe.contentWindow.postMessage({
             type: 'ui/host_context_changed',
-            displayMode: mode,
-            availableDisplayModes: Array.from(SUPPORTED_DISPLAY_MODES)
+            displayMode: mode
         }, '*');
     }
 }
@@ -832,7 +828,6 @@ window.addEventListener('message', (event) => {
                     hostContext: {
                         theme: 'light',
                         displayMode: 'inline',
-                        availableDisplayModes: Array.from(SUPPORTED_DISPLAY_MODES),
                         platform: 'web',
                         deviceCapabilities: {
                             touch: false,
@@ -862,10 +857,7 @@ window.addEventListener('message', (event) => {
             sender?.postMessage({
                 jsonrpc: '2.0',
                 method: 'ui/notifications/host-context-changed',
-                params: {
-                    displayMode: mode,
-                    availableDisplayModes: Array.from(SUPPORTED_DISPLAY_MODES)
-                }
+                params: { displayMode: mode }
             }, senderOrigin);
         } else if (data.method === 'ui/open-link' || data.method === 'open-link' || data.type === 'ui/openUrl' || data.type === 'open_link' || data.action === 'open_link') {
             const targetUrl = data.params?.url || data.payload?.url || data.url;
@@ -1011,24 +1003,26 @@ window.addEventListener('message', (event) => {
                 // or at the tool level (result.isError with the reason in content).
                 const isError = !!toolResult.error || toolResult.result?.isError === true;
 
-                let structuredContent;
+                let structuredContent = toolResult.result?.structuredContent;
                 if (isError) {
                     // Don't hand back error text as if it were renderable data.
                     structuredContent = undefined;
-                } else if (Array.isArray(parsedData)) {
-                    structuredContent = {
-                        data: parsedData,
-                        queryData: parsedData
-                    };
-                } else if (parsedData && typeof parsedData === 'object') {
-                    const rawData = parsedData.visualizationData?.queryResult?.data || parsedData.data || [];
-                    structuredContent = {
-                        ...parsedData,
-                        queryData: rawData,
-                        visualizationData: parsedData.visualizationData
-                    };
-                } else {
-                    structuredContent = parsedData;
+                } else if (!structuredContent) {
+                    if (Array.isArray(parsedData)) {
+                        structuredContent = {
+                            data: parsedData,
+                            queryData: parsedData
+                        };
+                    } else if (parsedData && typeof parsedData === 'object') {
+                        const rawData = parsedData.visualizationData?.queryResult?.data || parsedData.data || [];
+                        structuredContent = {
+                            ...parsedData,
+                            queryData: rawData,
+                            visualizationData: parsedData.visualizationData
+                        };
+                    } else {
+                        structuredContent = parsedData;
+                    }
                 }
 
                 const resultContent = toolResult.result?.content || [

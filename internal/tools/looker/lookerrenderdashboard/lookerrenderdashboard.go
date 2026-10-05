@@ -491,7 +491,8 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		return nil, util.NewClientServerError("error getting sdk", http.StatusInternalServerError, err)
 	}
 
-	dashboard, err := sdk.Dashboard(dashboardId, "", source.LookerApiSettings())
+	var rawDashboard map[string]any
+	err = sdk.AuthSession.Do(&rawDashboard, "GET", "/4.0", fmt.Sprintf("/dashboards/%s", url.PathEscape(dashboardId)), nil, nil, source.LookerApiSettings())
 	if err != nil {
 		if strings.Contains(err.Error(), "status=401") {
 			return nil, util.NewClientServerError("unauthorized error", http.StatusUnauthorized, err)
@@ -499,7 +500,12 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		return nil, util.ProcessGeneralError(err)
 	}
 
-	dashboardPayload := PruneDashboardPayload(dashboard)
+	var dashboard v4.Dashboard
+	if rawBytes, marshalErr := json.Marshal(rawDashboard); marshalErr == nil {
+		_ = json.Unmarshal(rawBytes, &dashboard)
+	}
+
+	dashboardPayload := PruneDashboardPayload(InjectComponentGroupIDs(dashboard, ExtractComponentGroupIDs(rawDashboard)))
 
 	dashboardData := map[string]any{
 		"dashboard": dashboardPayload,
@@ -686,6 +692,87 @@ func PruneDashboardPayload(dashboard any) any {
 		}
 	}
 
+	return dashMap
+}
+
+// ExtractComponentGroupIDs extracts a map of layout component ID to group_id
+// from the raw Looker dashboard JSON payload, since v4.DashboardLayoutComponent
+// in the Go SDK does not yet include the group_id field.
+func ExtractComponentGroupIDs(rawDashboard map[string]any) map[string]string {
+	groupIDs := make(map[string]string)
+	if rawDashboard == nil {
+		return groupIDs
+	}
+	layouts, ok := rawDashboard["dashboard_layouts"].([]any)
+	if !ok {
+		return groupIDs
+	}
+	for _, rawLayout := range layouts {
+		layoutMap, ok := rawLayout.(map[string]any)
+		if !ok {
+			continue
+		}
+		components, ok := layoutMap["dashboard_layout_components"].([]any)
+		if !ok {
+			continue
+		}
+		for _, rawComp := range components {
+			compMap, ok := rawComp.(map[string]any)
+			if !ok {
+				continue
+			}
+			compID := fmt.Sprintf("%v", compMap["id"])
+			rawGroupID, hasGroup := compMap["group_id"]
+			if !hasGroup || rawGroupID == nil || compID == "" || compID == "<nil>" {
+				continue
+			}
+			groupIDStr := strings.TrimSpace(fmt.Sprintf("%v", rawGroupID))
+			if groupIDStr != "" && groupIDStr != "<nil>" {
+				groupIDs[compID] = groupIDStr
+			}
+		}
+	}
+	return groupIDs
+}
+
+// InjectComponentGroupIDs returns the dashboard payload with group_id restored
+// on matching dashboard_layout_components when groupIDs is non-empty.
+func InjectComponentGroupIDs(dashboard v4.Dashboard, groupIDs map[string]string) any {
+	if len(groupIDs) == 0 {
+		return dashboard
+	}
+	rawBytes, err := json.Marshal(dashboard)
+	if err != nil {
+		return dashboard
+	}
+	var dashMap map[string]any
+	if err := json.Unmarshal(rawBytes, &dashMap); err != nil {
+		return dashboard
+	}
+	layouts, ok := dashMap["dashboard_layouts"].([]any)
+	if !ok {
+		return dashboard
+	}
+	for _, rawLayout := range layouts {
+		layoutMap, ok := rawLayout.(map[string]any)
+		if !ok {
+			continue
+		}
+		components, ok := layoutMap["dashboard_layout_components"].([]any)
+		if !ok {
+			continue
+		}
+		for _, rawComp := range components {
+			compMap, ok := rawComp.(map[string]any)
+			if !ok {
+				continue
+			}
+			compID := fmt.Sprintf("%v", compMap["id"])
+			if groupID, found := groupIDs[compID]; found {
+				compMap["group_id"] = groupID
+			}
+		}
+	}
 	return dashMap
 }
 

@@ -26,6 +26,7 @@ import (
 	"github.com/googleapis/mcp-toolbox/internal/testutils"
 	"github.com/googleapis/mcp-toolbox/internal/tools"
 	lkr "github.com/googleapis/mcp-toolbox/internal/tools/looker/lookerrenderdashboard"
+	v4 "github.com/looker-open-source/sdk-codegen/go/sdk/v4"
 )
 
 func TestParseFromYamlLookerRenderDashboard(t *testing.T) {
@@ -352,6 +353,77 @@ func TestRemoteUIFetching(t *testing.T) {
 	_, err = rpNoURL.GetResources()[0].Read(ctx, nil)
 	if err == nil || !strings.Contains(err.Error(), "no Looker instance URL configured") {
 		t.Errorf("expected no Looker instance URL configured error, got %v", err)
+	}
+}
+
+func TestExtractAndInjectComponentGroupIDs(t *testing.T) {
+	rawDashboard := map[string]any{
+		"id":    "30",
+		"title": "Dashboard with Tile Group",
+		"dashboard_layouts": []any{
+			map[string]any{
+				"id": "1",
+				"dashboard_layout_components": []any{
+					map[string]any{
+						"id":                   "100",
+						"dashboard_element_id": "50",
+						"row":                  float64(0),
+						"column":               float64(0),
+						"width":                float64(24),
+						"height":               float64(9),
+					},
+					map[string]any{
+						"id":                   "101",
+						"dashboard_element_id": "51",
+						"group_id":             "100",
+						"row":                  float64(0),
+						"column":               float64(0),
+						"width":                float64(12),
+						"height":               float64(8),
+					},
+				},
+			},
+		},
+	}
+
+	groupIDs := lkr.ExtractComponentGroupIDs(rawDashboard)
+	if len(groupIDs) != 1 || groupIDs["101"] != "100" {
+		t.Fatalf("expected groupIDs[\"101\"] == \"100\", got %v", groupIDs)
+	}
+
+	comp100ID := "100"
+	comp101ID := "101"
+	el50ID := "50"
+	el51ID := "51"
+	layoutID := "1"
+	dashID := "30"
+	sdkDash := v4.Dashboard{
+		Id: &dashID,
+		DashboardLayouts: &[]v4.DashboardLayout{
+			{
+				Id: &layoutID,
+				DashboardLayoutComponents: &[]v4.DashboardLayoutComponent{
+					{Id: &comp100ID, DashboardElementId: &el50ID},
+					{Id: &comp101ID, DashboardElementId: &el51ID},
+				},
+			},
+		},
+	}
+
+	injected := lkr.InjectComponentGroupIDs(sdkDash, groupIDs)
+	dashMap, ok := injected.(map[string]any)
+	if !ok {
+		t.Fatalf("expected injected payload to be map[string]any, got %T", injected)
+	}
+	layouts := dashMap["dashboard_layouts"].([]any)
+	comps := layouts[0].(map[string]any)["dashboard_layout_components"].([]any)
+	comp0 := comps[0].(map[string]any)
+	comp1 := comps[1].(map[string]any)
+	if _, hasGroup := comp0["group_id"]; hasGroup {
+		t.Errorf("expected comp 100 not to have group_id, got %v", comp0["group_id"])
+	}
+	if comp1["group_id"] != "100" {
+		t.Errorf("expected comp 101 to have group_id \"100\", got %v", comp1["group_id"])
 	}
 }
 

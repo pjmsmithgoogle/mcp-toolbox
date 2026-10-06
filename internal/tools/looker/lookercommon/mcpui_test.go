@@ -15,11 +15,18 @@
 package lookercommon_test
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/googleapis/mcp-toolbox/internal/resources"
 	"github.com/googleapis/mcp-toolbox/internal/tools/looker/lookercommon"
+	"github.com/looker-open-source/sdk-codegen/go/rtl"
+	v4 "github.com/looker-open-source/sdk-codegen/go/sdk/v4"
 )
 
 func TestDiscoverMCPUIPublicOrigin(t *testing.T) {
@@ -93,5 +100,101 @@ func TestAddCSPOrigin(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, csp); diff != "" {
 		t.Errorf("AddCSPOrigin() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestAppendLocaleQueryParam(t *testing.T) {
+	if got := lookercommon.AppendLocaleQueryParam("http://localhost:9999/public/mcp/ui/render_visualization/assets", "ja_JP"); got != "http://localhost:9999/public/mcp/ui/render_visualization/assets?locale=ja_JP" {
+		t.Errorf("AppendLocaleQueryParam() = %q", got)
+	}
+	if got := lookercommon.AppendLocaleQueryParam("http://localhost:9999/public/mcp/ui/render_visualization/assets?locale=es_ES", "ja_JP"); got != "http://localhost:9999/public/mcp/ui/render_visualization/assets?locale=es_ES" {
+		t.Errorf("AppendLocaleQueryParam() should preserve existing locale, got %q", got)
+	}
+	if got := lookercommon.AppendLocaleQueryParam("http://localhost:9999/public/mcp/ui/render_visualization/assets", ""); got != "http://localhost:9999/public/mcp/ui/render_visualization/assets" {
+		t.Errorf("AppendLocaleQueryParam() with empty locale = %q", got)
+	}
+}
+
+func TestFetchMcpAppStateCachesColorCollectionsPerInstanceOnly(t *testing.T) {
+	lookercommon.ClearMcpAppStateCacheForTesting()
+	defer lookercommon.ClearMcpAppStateCacheForTesting()
+
+	var userCalls int32
+	var colorCalls int32
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/4.0/login":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token": "test-token",
+				"token_type":   "Bearer",
+				"expires_in":   3600,
+			})
+		case "/api/4.0/user":
+			callNum := atomic.AddInt32(&userCalls, 1)
+			locale := "en"
+			if callNum == 2 {
+				locale = "ja_JP"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":     "1",
+				"locale": locale,
+				"abilities": map[string]any{
+					"objects": map[string]any{
+						"query": map[string]any{"can": map[string]any{"explore": true, "run": true}},
+					},
+				},
+			})
+		case "/api/4.0/color_collections/active":
+			atomic.AddInt32(&colorCalls, 1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"default_collection_id": "b43731d5-dc87-4a8e-b807-635bef3948e7",
+				"default_colors":        []string{"#FBBC04", "#EA4335"},
+				"custom":                []any{},
+				"standard":              []any{map[string]any{"id": "b43731d5-dc87-4a8e-b807-635bef3948e7", "label": "Boardwalk"}},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	settings := rtl.ApiSettings{
+		BaseUrl:      ts.URL,
+		ApiVersion:   "4.0",
+		ClientId:     "id",
+		ClientSecret: "secret",
+	}
+	sdk := v4.NewLookerSDK(rtl.NewAuthSession(settings))
+
+	// First call fetches both /user and /color_collections/active
+	state1 := lookercommon.FetchMcpAppState(context.Background(), sdk, &settings)
+	if state1 == nil {
+		t.Fatalf("expected non-nil app_state on first call")
+	}
+	if got := atomic.LoadInt32(&userCalls); got != 1 {
+		t.Errorf("userCalls after call 1 = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&colorCalls); got != 1 {
+		t.Errorf("colorCalls after call 1 = %d, want 1", got)
+	}
+	if got := lookercommon.GetLastObservedLocale(&settings); got != "en" {
+		t.Errorf("GetLastObservedLocale after call 1 = %q, want en", got)
+	}
+
+	// Second call fetches /user again (not cached) but reuses cached /color_collections/active
+	state2 := lookercommon.FetchMcpAppState(context.Background(), sdk, &settings)
+	if state2 == nil {
+		t.Fatalf("expected non-nil app_state on second call")
+	}
+	if got := atomic.LoadInt32(&userCalls); got != 2 {
+		t.Errorf("userCalls after call 2 = %d, want 2", got)
+	}
+	if got := atomic.LoadInt32(&colorCalls); got != 1 {
+		t.Errorf("colorCalls after call 2 = %d, want 1 (should be cached)", got)
+	}
+	if got := lookercommon.GetLastObservedLocale(&settings); got != "ja_JP" {
+		t.Errorf("GetLastObservedLocale after call 2 = %q, want ja_JP", got)
 	}
 }

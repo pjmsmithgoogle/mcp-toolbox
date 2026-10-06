@@ -81,10 +81,11 @@ func (cfg Config) ToolConfigType() string {
 }
 
 type uiState struct {
-	mu         sync.RWMutex
-	src        compatibleSource
-	cachedHTML string
-	cacheTime  time.Time
+	mu           sync.RWMutex
+	src          compatibleSource
+	cachedHTML   string
+	cachedLocale string
+	cacheTime    time.Time
 }
 
 func getVisualizationParameters() parameters.Parameters {
@@ -394,12 +395,17 @@ func (t Tool) fetchRemoteUI(ctx context.Context) (string, error) {
 
 	// 1. Check in-memory cache (5-minute TTL)
 	t.state.mu.RLock()
-	if t.state.cachedHTML != "" && time.Since(t.state.cacheTime) < 5*time.Minute {
+	src := t.state.src
+	var apiSettings *rtl.ApiSettings
+	if src != nil {
+		apiSettings = src.LookerApiSettings()
+	}
+	desiredLocale := lookercommon.GetLastObservedLocale(apiSettings)
+	if t.state.cachedHTML != "" && t.state.cachedLocale == desiredLocale && time.Since(t.state.cacheTime) < 5*time.Minute {
 		html := t.state.cachedHTML
 		t.state.mu.RUnlock()
 		return html, nil
 	}
-	src := t.state.src
 	t.state.mu.RUnlock()
 
 	var remoteURL string
@@ -418,14 +424,15 @@ func (t Tool) fetchRemoteUI(ctx context.Context) (string, error) {
 		} else {
 			remoteURL = lookerUIURL
 		}
-	} else if src != nil && src.LookerApiSettings() != nil && src.LookerApiSettings().BaseUrl != "" {
-		baseURL := strings.TrimSuffix(src.LookerApiSettings().BaseUrl, "/")
+	} else if apiSettings != nil && apiSettings.BaseUrl != "" {
+		baseURL := strings.TrimSuffix(apiSettings.BaseUrl, "/")
 		remoteURL = fmt.Sprintf("%s/public/mcp/ui/render_visualization/assets", baseURL)
 	}
 
 	if remoteURL == "" {
 		return "", fmt.Errorf("no Looker instance URL configured to fetch visualization UI")
 	}
+	remoteURL = lookercommon.AppendLocaleQueryParam(remoteURL, desiredLocale)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, remoteURL, nil)
 	if err != nil {
@@ -433,7 +440,7 @@ func (t Tool) fetchRemoteUI(ctx context.Context) (string, error) {
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	if src != nil && src.LookerApiSettings() != nil && !src.LookerApiSettings().VerifySsl {
+	if apiSettings != nil && !apiSettings.VerifySsl {
 		client.Transport = &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		}
@@ -464,6 +471,7 @@ func (t Tool) fetchRemoteUI(ctx context.Context) (string, error) {
 	t.state.mu.Lock()
 	t.allowUIOrigin(remoteURL, publicOrigin)
 	t.state.cachedHTML = html
+	t.state.cachedLocale = desiredLocale
 	t.state.cacheTime = time.Now()
 	t.state.mu.Unlock()
 
@@ -534,6 +542,16 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 	if err != nil {
 		return nil, util.NewClientServerError("error getting sdk", http.StatusInternalServerError, err)
 	}
+
+	var (
+		appState   map[string]any
+		appStateWg sync.WaitGroup
+	)
+	appStateWg.Add(1)
+	go func() {
+		defer appStateWg.Done()
+		appState = lookercommon.FetchMcpAppState(ctx, sdk, source.LookerApiSettings())
+	}()
 
 	paramMap := params.AsMap()
 	queryIdVal, _ := paramMap["query_id"].(string)
@@ -826,11 +844,16 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 			queryResult["errors"] = errs
 		}
 
+		appStateWg.Wait()
+
 		visualizationData := map[string]any{
 			"queryResult": queryResult,
 			"visConfig":   visConfigObj,
 			"title":       title,
 			"query":       queryMeta,
+		}
+		if appState != nil {
+			visualizationData["app_state"] = appState
 		}
 
 		resultPayload := map[string]any{
@@ -841,6 +864,9 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 			"client_id":          queryMeta["client_id"],
 			"share_url":          queryMeta["share_url"],
 			"expanded_share_url": queryMeta["expanded_share_url"],
+		}
+		if appState != nil {
+			resultPayload["app_state"] = appState
 		}
 		return applyVisualizationPayloadLimit(resultPayload, visualizationData), nil
 	}
@@ -939,6 +965,8 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		queryResult["errors"] = errorsObj
 	}
 
+	appStateWg.Wait()
+
 	visualizationData := map[string]any{
 		"queryResult": queryResult,
 		"visConfig":   visConfigObj,
@@ -960,6 +988,9 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 			"limit":              wq.Limit,
 		},
 	}
+	if appState != nil {
+		visualizationData["app_state"] = appState
+	}
 
 	resultPayload := map[string]any{
 		"visualizationData":  visualizationData,
@@ -971,6 +1002,9 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		"client_id":          slug,
 		"share_url":          shareUrl,
 		"expanded_share_url": expandedShareUrl,
+	}
+	if appState != nil {
+		resultPayload["app_state"] = appState
 	}
 	return applyVisualizationPayloadLimit(resultPayload, visualizationData), nil
 }

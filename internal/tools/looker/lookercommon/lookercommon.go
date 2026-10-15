@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/googleapis/mcp-toolbox/internal/util"
@@ -248,14 +249,24 @@ func EscapeFiltersForUnquotedParameters(wq *v4.WriteQuery, unquotedNames map[str
 
 // resolveUnquotedParameterNames fetches the parameter metadata for the explore
 // targeted by wq and returns the set of fully-qualified parameter names whose
-// LookML type is `unquoted`. Returns an empty map (and no error) when the
-// WriteQuery has no model/view set or no filters at all — the caller has
-// nothing to escape in either case.
+// LookML type is `unquoted`. When wq.Filters contains keys without a dot (`.`),
+// it also requests dimension/measure/filter names to resolve underscored keys
+// rewritten by Vertex OpenAPI tool calling.
 func resolveUnquotedParameterNames(ctx context.Context, sdk *v4.LookerSDK, wq *v4.WriteQuery, opts *rtl.ApiSettings) (map[string]bool, error) {
 	if wq == nil || wq.Filters == nil || len(*wq.Filters) == 0 || wq.Model == "" || wq.View == "" {
 		return map[string]bool{}, nil
 	}
+	hasDotlessKey := false
+	for k := range *wq.Filters {
+		if !strings.Contains(k, ".") && strings.Contains(k, "_") {
+			hasDotlessKey = true
+			break
+		}
+	}
 	fields := ParametersFields
+	if hasDotlessKey {
+		fields = "fields(dimensions(name),measures(name),filters(name),parameters(name,type))"
+	}
 	req := v4.RequestLookmlModelExplore{
 		LookmlModelName: wq.Model,
 		ExploreName:     wq.View,
@@ -266,7 +277,30 @@ func resolveUnquotedParameterNames(ctx context.Context, sdk *v4.LookerSDK, wq *v
 		return nil, err
 	}
 	out := map[string]bool{}
-	if resp.Fields == nil || resp.Fields.Parameters == nil {
+	if resp.Fields == nil {
+		return out, nil
+	}
+	if hasDotlessKey {
+		var exploreFieldNames []string
+		for _, slicePtr := range []*[]v4.LookmlModelExploreField{
+			resp.Fields.Dimensions,
+			resp.Fields.Measures,
+			resp.Fields.Filters,
+			resp.Fields.Parameters,
+		} {
+			if slicePtr == nil {
+				continue
+			}
+			for _, f := range *slicePtr {
+				if f.Name != nil && *f.Name != "" {
+					exploreFieldNames = append(exploreFieldNames, *f.Name)
+				}
+			}
+		}
+		normalized := NormalizeFilterKeys(*wq.Filters, exploreFieldNames, wq.View)
+		*wq.Filters = normalized
+	}
+	if resp.Fields.Parameters == nil {
 		return out, nil
 	}
 	for _, p := range *resp.Fields.Parameters {
@@ -295,6 +329,175 @@ func EscapeUnquotedParameterFilters(ctx context.Context, sdk *v4.LookerSDK, wq *
 	return nil
 }
 
+func stripWrappingQuotesAndBrackets(s string, stripBrackets bool) string {
+	for len(s) >= 2 {
+		if (s[0] == '\'' || s[0] == '"') && s[0] == s[len(s)-1] {
+			s = s[1 : len(s)-1]
+			continue
+		}
+		if stripBrackets && s[0] == '[' && s[len(s)-1] == ']' {
+			s = s[1 : len(s)-1]
+			continue
+		}
+		break
+	}
+	return s
+}
+
+// NormalizeFilterKeys strips wrapping quotes/brackets from filter keys and
+// string values, and rewrites dotless underscored filter keys (e.g.,
+// "order_items_created_date" -> "order_items.created_date" or
+// "users_state" -> "users.state") produced when Vertex OpenAPI tool calling
+// replaces dots with underscores in map keys.
+func NormalizeFilterKeys(filters map[string]any, fields []string, hints ...string) map[string]any {
+	if filters == nil {
+		return nil
+	}
+
+	var knownFields []string
+	viewPrefixSet := make(map[string]bool)
+	addCandidate := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		token := strings.Fields(raw)[0]
+		token = stripWrappingQuotesAndBrackets(token, true)
+		if dotIdx := strings.IndexByte(token, '.'); dotIdx > 0 {
+			knownFields = append(knownFields, token)
+			viewPrefixSet[token[:dotIdx]] = true
+		} else if token != "" {
+			viewPrefixSet[token] = true
+		}
+	}
+	for _, f := range fields {
+		addCandidate(f)
+	}
+	for _, h := range hints {
+		addCandidate(h)
+	}
+
+	viewPrefixes := make([]string, 0, len(viewPrefixSet))
+	for vp := range viewPrefixSet {
+		viewPrefixes = append(viewPrefixes, vp)
+	}
+	sort.Slice(viewPrefixes, func(i, j int) bool {
+		if len(viewPrefixes[i]) != len(viewPrefixes[j]) {
+			return len(viewPrefixes[i]) > len(viewPrefixes[j])
+		}
+		return viewPrefixes[i] < viewPrefixes[j]
+	})
+
+	processed := make(map[string]any, len(filters))
+	for k, v := range filters {
+		newKey := stripWrappingQuotesAndBrackets(k, true)
+		if !strings.Contains(newKey, ".") && strings.Contains(newKey, "_") {
+			matched := false
+			for _, vf := range knownFields {
+				if strings.ReplaceAll(vf, ".", "_") == newKey {
+					newKey = vf
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				for _, vp := range viewPrefixes {
+					prefix := vp + "_"
+					if strings.HasPrefix(newKey, prefix) && len(newKey) > len(prefix) {
+						newKey = vp + "." + newKey[len(prefix):]
+						matched = true
+						break
+					}
+				}
+			}
+			if !matched && strings.Count(newKey, "_") == 1 {
+				newKey = strings.Replace(newKey, "_", ".", 1)
+			}
+		}
+
+		newVal := v
+		if s, ok := v.(string); ok && len(s) >= 2 &&
+			(s[0] == '\'' || s[0] == '"') && s[0] == s[len(s)-1] {
+			newVal = s[1 : len(s)-1]
+		}
+		processed[newKey] = newVal
+	}
+	return processed
+}
+
+// EnsurePivotsInFields validates that every pivot field is formatted as
+// "view.field" and ensures each pivot field is included in fields.
+func EnsurePivotsInFields(fields, pivots []string) ([]string, error) {
+	if len(pivots) == 0 {
+		return fields, nil
+	}
+	fieldSet := make(map[string]bool, len(fields))
+	for _, f := range fields {
+		fieldSet[f] = true
+	}
+	out := append([]string(nil), fields...)
+	for _, p := range pivots {
+		trimmed := strings.TrimSpace(p)
+		if trimmed == "" {
+			continue
+		}
+		if !strings.Contains(trimmed, ".") {
+			return nil, fmt.Errorf("invalid pivot field %q: pivot fields must be in 'view.field' format and included in fields", trimmed)
+		}
+		if !fieldSet[trimmed] {
+			out = append(out, trimmed)
+			fieldSet[trimmed] = true
+		}
+	}
+	return out, nil
+}
+
+// ValidatePivotsInDetailResponse checks a Looker json_detail response when
+// pivots were requested. If Looker silently dropped a pivot field (returning
+// an empty fields.pivots array) or returned query errors in json_detail, an
+// actionable error is returned so the caller/agent can correct the pivot field.
+func ValidatePivotsInDetailResponse(requestedPivots []string, detailResp map[string]any) error {
+	if len(requestedPivots) == 0 || detailResp == nil {
+		return nil
+	}
+	if rawErrs, ok := detailResp["errors"].([]any); ok && len(rawErrs) > 0 {
+		for _, e := range rawErrs {
+			if errMap, ok := e.(map[string]any); ok {
+				if fatal, hasFatal := errMap["fatal"].(bool); hasFatal && !fatal {
+					continue
+				}
+				if msg, _ := errMap["message"].(string); strings.TrimSpace(msg) != "" {
+					return fmt.Errorf("error running pivoted query: %s", strings.TrimSpace(msg))
+				}
+			}
+		}
+	}
+	fieldsMap, ok := detailResp["fields"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	rawFieldPivots, hasFieldPivots := fieldsMap["pivots"]
+	if !hasFieldPivots {
+		return nil
+	}
+	pivotSlice, _ := rawFieldPivots.([]any)
+	activePivotFields := make(map[string]bool, len(pivotSlice))
+	for _, item := range pivotSlice {
+		if m, ok := item.(map[string]any); ok {
+			if name, _ := m["name"].(string); name != "" {
+				activePivotFields[name] = true
+			}
+		}
+	}
+	for _, reqPivot := range requestedPivots {
+		reqPivot = strings.TrimSpace(reqPivot)
+		if reqPivot != "" && !activePivotFields[reqPivot] {
+			return fmt.Errorf("invalid pivot field %q: Looker ignored the pivot because the field does not exist in this explore or cannot be pivoted; use get_dimensions to verify valid dimension names", reqPivot)
+		}
+	}
+	return nil
+}
+
 func ProcessQueryArgs(ctx context.Context, params parameters.ParamValues) (*v4.WriteQuery, error) {
 	logger, err := util.LoggerFromContext(ctx)
 	if err != nil {
@@ -304,42 +507,52 @@ func ProcessQueryArgs(ctx context.Context, params parameters.ParamValues) (*v4.W
 	logger.DebugContext(ctx, "params = ", params)
 	paramsMap := params.AsMap()
 
-	f, err := parameters.ConvertAnySliceToTyped(paramsMap["fields"].([]any), "string")
-	if err != nil {
-		return nil, fmt.Errorf("can't convert fields to array of strings: %s", err)
-	}
-	fields := f.([]string)
-	filters := paramsMap["filters"].(map[string]any)
-	// Strip a single layer of wrapping quotes from keys and string values.
-	// Values matter for LookML `type: unquoted` parameters, where Looker
-	// substitutes the value bare into SQL via {% parameter %}. Build a new map
-	// rather than mutating during iteration, and avoid comparing `any` values
-	// directly (non-comparable dynamic types like slices would panic).
-	processedFilters := make(map[string]any, len(filters))
-	for k, v := range filters {
-		newKey := k
-		if len(k) >= 2 && (k[0] == '\'' || k[0] == '"') && k[0] == k[len(k)-1] {
-			newKey = k[1 : len(k)-1]
+	var fields []string
+	if rawFields, ok := paramsMap["fields"].([]any); ok {
+		f, err := parameters.ConvertAnySliceToTyped(rawFields, "string")
+		if err != nil {
+			return nil, fmt.Errorf("can't convert fields to array of strings: %s", err)
 		}
-		newVal := v
-		if s, ok := v.(string); ok && len(s) >= 2 &&
-			(s[0] == '\'' || s[0] == '"') && s[0] == s[len(s)-1] {
-			newVal = s[1 : len(s)-1]
+		fields = f.([]string)
+	}
+	var pivots []string
+	if rawPivots, ok := paramsMap["pivots"].([]any); ok {
+		p, err := parameters.ConvertAnySliceToTyped(rawPivots, "string")
+		if err != nil {
+			return nil, fmt.Errorf("can't convert pivots to array of strings: %s", err)
 		}
-		processedFilters[newKey] = newVal
+		pivots = p.([]string)
 	}
-	filters = processedFilters
-	p, err := parameters.ConvertAnySliceToTyped(paramsMap["pivots"].([]any), "string")
+	fields, err = EnsurePivotsInFields(fields, pivots)
 	if err != nil {
-		return nil, fmt.Errorf("can't convert pivots to array of strings: %s", err)
+		return nil, err
 	}
-	pivots := p.([]string)
-	s, err := parameters.ConvertAnySliceToTyped(paramsMap["sorts"].([]any), "string")
-	if err != nil {
-		return nil, fmt.Errorf("can't convert sorts to array of strings: %s", err)
+	var sorts []string
+	if rawSorts, ok := paramsMap["sorts"].([]any); ok {
+		s, err := parameters.ConvertAnySliceToTyped(rawSorts, "string")
+		if err != nil {
+			return nil, fmt.Errorf("can't convert sorts to array of strings: %s", err)
+		}
+		sorts = s.([]string)
 	}
-	sorts := s.([]string)
-	limit := fmt.Sprintf("%v", paramsMap["limit"].(int))
+
+	modelName, _ := paramsMap["model"].(string)
+	exploreName, _ := paramsMap["explore"].(string)
+	rawFilters, _ := paramsMap["filters"].(map[string]any)
+	if rawFilters == nil {
+		rawFilters = map[string]any{}
+	}
+	hints := make([]string, 0, 1+len(pivots)+len(sorts))
+	if exploreName != "" {
+		hints = append(hints, exploreName)
+	}
+	hints = append(hints, pivots...)
+	hints = append(hints, sorts...)
+	filters := NormalizeFilterKeys(rawFilters, fields, hints...)
+	limit := "500"
+	if l, ok := paramsMap["limit"].(int); ok && l > 0 {
+		limit = fmt.Sprintf("%d", l)
+	}
 
 	var tz string
 	if paramsMap["tz"] != nil {
@@ -375,8 +588,8 @@ func ProcessQueryArgs(ctx context.Context, params parameters.ParamValues) (*v4.W
 	}
 
 	wq := v4.WriteQuery{
-		Model:            paramsMap["model"].(string),
-		View:             paramsMap["explore"].(string),
+		Model:            modelName,
+		View:             exploreName,
 		Fields:           &fields,
 		Pivots:           &pivots,
 		Filters:          &filters,
@@ -774,4 +987,22 @@ func ExtractLookerErrorMessage(err error) error {
 	}
 
 	return fmt.Errorf("%s", msg)
+}
+
+// MaxMCPPayloadBytes is the maximum serialized JSON byte size for an MCP App
+// tool response (900 KB) so responses stay safely under MCP host limits
+// (such as Claude Desktop's 1 MB tool result cap).
+const MaxMCPPayloadBytes = 900 * 1024
+
+// ExceedsMCPPayloadLimit checks whether the JSON-serialized form of payload
+// exceeds maxBytes (defaulting to MaxMCPPayloadBytes when maxBytes <= 0).
+func ExceedsMCPPayloadLimit(payload any, maxBytes int) (int, bool) {
+	if maxBytes <= 0 {
+		maxBytes = MaxMCPPayloadBytes
+	}
+	rawBytes, err := json.Marshal(payload)
+	if err != nil {
+		return 0, false
+	}
+	return len(rawBytes), len(rawBytes) > maxBytes
 }

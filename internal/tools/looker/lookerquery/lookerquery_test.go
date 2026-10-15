@@ -16,6 +16,10 @@ package lookerquery_test
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -30,15 +34,21 @@ import (
 	v4 "github.com/looker-open-source/sdk-codegen/go/sdk/v4"
 )
 
-type fakeLookerSource struct{}
+type fakeLookerSource struct {
+	settings *rtl.ApiSettings
+	sdk      *v4.LookerSDK
+}
 
 func (f fakeLookerSource) SourceType() string                  { return "looker" }
 func (f fakeLookerSource) ToConfig() sources.SourceConfig      { return nil }
 func (f fakeLookerSource) IsReadOnly() bool                    { return false }
 func (f fakeLookerSource) UseClientAuthorization() bool        { return false }
 func (f fakeLookerSource) GetAuthTokenHeaderName() string      { return "Authorization" }
-func (f fakeLookerSource) LookerApiSettings() *rtl.ApiSettings { return nil }
+func (f fakeLookerSource) LookerApiSettings() *rtl.ApiSettings { return f.settings }
 func (f fakeLookerSource) GetLookerSDK(context.Context, string) (*v4.LookerSDK, error) {
+	if f.sdk != nil {
+		return f.sdk, nil
+	}
 	return &v4.LookerSDK{}, nil
 }
 
@@ -147,8 +157,8 @@ func TestBuildWriteQueryWithOverrides(t *testing.T) {
 	}
 
 	filterOverrides := map[string]any{
-		"customer.last_name": "Simpson",
-		"customer.city":      "", // Empty string override clears default city filter
+		"customer_last_name": "Simpson",
+		"customer_city":      "", // Underscored key override clears default city filter
 	}
 	sortOverrides := []string{"customer.last_name asc"}
 
@@ -197,13 +207,13 @@ func TestInitializeIncludesSavedQueryParameters(t *testing.T) {
 	paramByName := make(map[string]bool)
 	for _, p := range manifest.Parameters {
 		paramByName[p.Name] = true
-		if p.Name == "query_id" || p.Name == "model" || p.Name == "explore" || p.Name == "fields" || p.Name == "generate_drill_links" {
+		if p.Name == "query_id" || p.Name == "merge_result_id" || p.Name == "model" || p.Name == "explore" || p.Name == "fields" || p.Name == "generate_drill_links" {
 			if p.Required {
 				t.Errorf("expected parameter %q to be optional (Required=false) at schema level", p.Name)
 			}
 		}
 	}
-	for _, expected := range []string{"query_id", "model", "explore", "fields", "result_format", "vis_config", "generate_drill_links"} {
+	for _, expected := range []string{"query_id", "merge_result_id", "model", "explore", "fields", "result_format", "vis_config", "generate_drill_links"} {
 		if !paramByName[expected] {
 			t.Errorf("expected parameter %q in tool manifest, got %+v", expected, manifest.Parameters)
 		}
@@ -256,3 +266,197 @@ func TestInvokeValidationErrors(t *testing.T) {
 		}
 	})
 }
+
+func TestInvokeMergeResultId(t *testing.T) {
+	ctx, err := testutils.ContextWithNewLogger()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/4.0/merge_queries/mr_123":
+			_, _ = w.Write([]byte(`{
+				"id": "mr_123",
+				"source_queries": [
+					{
+						"query_id": "10",
+						"name": "Orders"
+					},
+					{
+						"query_id": "20",
+						"name": "Inventory",
+						"merge_fields": [
+							{
+								"source_field_name": "inventory_items.category",
+								"field_name": "products.category"
+							}
+						]
+					}
+				],
+				"vis_config": {"type": "looker_grid"}
+			}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/4.0/queries/10":
+			_, _ = w.Write([]byte(`{"id":"10","model":"thelook","view":"order_items","fields":["products.category","order_items.count"]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/4.0/queries/20":
+			_, _ = w.Write([]byte(`{"id":"20","model":"thelook","view":"inventory_items","fields":["inventory_items.category","inventory_items.count"]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/4.0/queries/run/json_detail":
+			bodyBytes, _ := io.ReadAll(r.Body)
+			var wq map[string]any
+			_ = json.Unmarshal(bodyBytes, &wq)
+			if wq["view"] == "order_items" {
+				if sortsList, ok := wq["sorts"].([]any); ok {
+					for _, s := range sortsList {
+						if strings.Contains(s.(string), "inventory_items.") {
+							w.WriteHeader(http.StatusUnprocessableEntity)
+							_, _ = w.Write([]byte(`{"message":"Unknown field inventory_items.count in order_items"}`))
+							return
+						}
+					}
+				}
+				_, _ = w.Write([]byte(`{
+					"data": [
+						{"products.category": {"value": "Accessories"}, "order_items.count": {"value": 100}},
+						{"products.category": {"value": "Jeans"}, "order_items.count": {"value": 50}}
+					],
+					"fields": {
+						"dimensions": [{"name": "products.category", "label": "Category"}],
+						"measures": [{"name": "order_items.count", "label": "Order Count"}]
+					}
+				}`))
+			} else {
+				_, _ = w.Write([]byte(`{
+					"data": [
+						{"inventory_items.category": {"value": "Accessories"}, "inventory_items.count": {"value": 120}},
+						{"inventory_items.category": {"value": "Jeans"}, "inventory_items.count": {"value": 250}}
+					],
+					"fields": {
+						"dimensions": [{"name": "inventory_items.category", "label": "Category"}],
+						"measures": [{"name": "inventory_items.count", "label": "Inventory Count"}]
+					}
+				}`))
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	settings := &rtl.ApiSettings{BaseUrl: ts.URL}
+	session := rtl.NewAuthSession(*settings)
+	session.Client = *ts.Client()
+	sdk := v4.NewLookerSDK(session)
+
+	cfg := lkr.Config{
+		ConfigBase: tools.ConfigBase{
+			Name:        "query",
+			Description: "Execute an inline, saved, or merged query",
+		},
+		Type:   "looker-query",
+		Source: "looker-source",
+	}
+	tool, err := cfg.Initialize(ctx)
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	params := parameters.ParamValues{
+		{Name: "merge_result_id", Value: "mr_123"},
+		{Name: "result_format", Value: "json_detail"},
+		{Name: "filters", Value: map[string]any{"products_category": "Accessories,Jeans"}},
+		{Name: "sorts", Value: []any{"inventory_items.count desc"}},
+	}
+	res, tbErr := tool.Invoke(ctx, fakeLookerSource{settings: settings, sdk: sdk}, params, "")
+	if tbErr != nil {
+		t.Fatalf("Invoke failed: %v", tbErr)
+	}
+
+	structured, ok := res.(tools.StructuredToolResult)
+	if !ok {
+		t.Fatalf("expected StructuredToolResult, got %T", res)
+	}
+	sc := structured.StructuredContent
+	rows, ok := sc["data"].([]any)
+	if !ok || len(rows) != 2 {
+		t.Fatalf("expected 2 merged rows, got %v", sc["data"])
+	}
+	row0 := rows[0].(map[string]any)
+	if _, hasInvCount := row0["inventory_items.count"]; !hasInvCount {
+		t.Errorf("expected inventory_items.count to be joined into primary row, got %v", row0)
+	}
+	// Because sorts=["inventory_items.count desc"] was requested and Jeans has 250 > Accessories 120,
+	// row0 should be Jeans after in-memory post-join sorting.
+	catCell, _ := row0["products.category"].(map[string]any)
+	if catCell["value"] != "Jeans" {
+		t.Errorf("expected merged rows sorted by secondary query field inventory_items.count desc (Jeans first), got %v", row0["products.category"])
+	}
+}
+
+func TestInvokeInlineQueryWithVisConfigAndErrorExtraction(t *testing.T) {
+	ctx, err := testutils.ContextWithNewLogger()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	failMode := false
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/api/4.0/queries/run/json" {
+			if failMode {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"message":"Validation Failed","errors":[{"field":"fields","message":"Unknown field orders.bad_field"}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`[{"orders.count":42}]`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	settings := &rtl.ApiSettings{BaseUrl: ts.URL}
+	session := rtl.NewAuthSession(*settings)
+	session.Client = *ts.Client()
+	sdk := v4.NewLookerSDK(session)
+
+	cfg := lkr.Config{
+		ConfigBase: tools.ConfigBase{
+			Name:        "query",
+			Description: "Execute an inline query",
+		},
+		Type:   "looker-query",
+		Source: "looker-source",
+	}
+	tool, err := cfg.Initialize(ctx)
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	params := parameters.ParamValues{
+		{Name: "model", Value: "thelook"},
+		{Name: "explore", Value: "orders"},
+		{Name: "fields", Value: []any{"orders.count"}},
+		{Name: "vis_config", Value: `{"type":"single_value"}`},
+	}
+	res, tbErr := tool.Invoke(ctx, fakeLookerSource{settings: settings, sdk: sdk}, params, "")
+	if tbErr != nil {
+		t.Fatalf("Invoke failed: %v", tbErr)
+	}
+	structured, ok := res.(tools.StructuredToolResult)
+	if !ok {
+		t.Fatalf("expected StructuredToolResult when vis_config is provided on inline json query, got %T", res)
+	}
+	visCfg, ok := structured.StructuredContent["vis_config"].(map[string]any)
+	if !ok || visCfg["type"] != "single_value" {
+		t.Errorf("expected vis_config.type=single_value, got %v", structured.StructuredContent["vis_config"])
+	}
+
+	failMode = true
+	_, tbErr = tool.Invoke(ctx, fakeLookerSource{settings: settings, sdk: sdk}, params, "")
+	if tbErr == nil || tbErr.Error() != "error processing request: Validation Failed" {
+		t.Errorf("expected extracted Looker error message on inline query error, got %v", tbErr)
+	}
+}
+
+

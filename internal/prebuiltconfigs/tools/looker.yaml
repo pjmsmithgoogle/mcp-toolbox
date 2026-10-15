@@ -173,16 +173,17 @@ name: query
 type: looker-query
 source: looker-source
 description: |
-  This tool runs a query against a LookML model or executes a saved query by ID/slug and returns the results in JSON format.
+  This tool runs a query against a LookML model, executes a saved query by ID/slug, or executes a merged query by merge_result_id, and returns the results in JSON format.
 
-  Parameters (provide either `query_id` OR `model` + `explore` + `fields`):
+  Parameters (provide `query_id`, `merge_result_id`, OR `model` + `explore` + `fields`):
   - query_id (optional): The unique identifier (numeric ID or slug) of a saved Looker query to execute. If provided, `model`, `explore`, and `fields` are not required.
-  - model: The name of the LookML model (from `get_models`). Required if `query_id` is not provided.
-  - explore: The name of the explore (from `get_explores`). Required if `query_id` is not provided.
-  - fields: A list of field names (dimensions, measures, filters, or parameters) to include in the query. Required if `query_id` is not provided.
+  - merge_result_id (optional): The unique identifier of a Looker merged query (`merge_result_id`) to execute. If provided, `query_id`, `model`, `explore`, and `fields` are not required.
+  - model: The name of the LookML model (from `get_models`). Required if `query_id` and `merge_result_id` are not provided.
+  - explore: The name of the explore (from `get_explores`). Required if `query_id` and `merge_result_id` are not provided.
+  - fields: A list of field names (dimensions, measures, filters, or parameters) to include in the query. Required if `query_id` and `merge_result_id` are not provided.
 
   Optional Parameters:
-  - pivots: A list of fields to pivot the results by. These fields must also be included in the `fields` list.
+  - pivots: A list of fields to pivot the results by. Any pivot field omitted from `fields` is automatically appended to `fields`.
   - filters: A map of filter expressions, e.g., `{"view_name.field_name": "value", "view_name.date": "7 days"}`.
     - Each key must be a fully-scoped `view_name.field_name`, copied verbatim from
       `get_dimensions`, `get_measures`, `get_filters`, or `get_parameters`. The view

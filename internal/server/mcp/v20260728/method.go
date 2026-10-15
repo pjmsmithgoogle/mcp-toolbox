@@ -284,6 +284,12 @@ func toolsListHandler(ctx context.Context, id jsonrpc.RequestId, primitiveMgr *p
 
 // toolsCallHandler generate a response for tools call.
 func toolsCallHandler(ctx context.Context, id jsonrpc.RequestId, g group.Group, primitiveMgr *primitives.PrimitiveManager, body []byte, header http.Header) (any, error) {
+	if header != nil {
+		if clientIP := util.ExtractClientIP(header); clientIP != "" {
+			ctx = util.WithClientIP(ctx, clientIP)
+		}
+	}
+
 	authServices := primitiveMgr.AuthServices()
 
 	// retrieve logger from context
@@ -634,6 +640,12 @@ func toolsCallHandler(ctx context.Context, id jsonrpc.RequestId, g group.Group, 
 		}
 	}
 
+	var structuredContent map[string]any
+	if structuredRes, ok := results.(tools.StructuredToolResult); ok {
+		structuredContent = structuredRes.StructuredContent
+		results = structuredRes.Content
+	}
+
 	content := make([]TextContent, 0)
 
 	sliceRes, ok := results.([]any)
@@ -662,7 +674,8 @@ func toolsCallHandler(ctx context.Context, id jsonrpc.RequestId, g group.Group, 
 					Meta: meta,
 				},
 			},
-			Content: content,
+			Content:           content,
+			StructuredContent: structuredContent,
 		},
 	}, nil
 }
@@ -1139,6 +1152,10 @@ func resourcesReadHandler(ctx context.Context, id jsonrpc.RequestId, primitiveMg
 	}
 	if uiMeta != nil {
 		contentMeta = map[string]any{"ui": uiMeta}
+		if meta == nil {
+			meta = make(map[string]any)
+		}
+		meta["ui"] = uiMeta
 	}
 
 	result := &ReadResourceResult{

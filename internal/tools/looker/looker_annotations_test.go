@@ -457,4 +457,25 @@ annotations:
 	if annotations.DestructiveHint == nil || *annotations.DestructiveHint != false {
 		t.Errorf("expected destructiveHint=false, got %v", annotations.DestructiveHint)
 	}
+
+	// Verify custom readOnlyHint is preserved when explicitly configured in YAML
+	customReadOnlyConfig := `
+source: my-looker-source
+description: test description
+annotations:
+  readOnlyHint: false
+`
+	decoder2 := yaml.NewDecoder(strings.NewReader(customReadOnlyConfig))
+	cfg2, err := tools.DecodeConfig(ctx, "looker-get-models", "test_tool_custom_ro", decoder2)
+	if err != nil {
+		t.Fatalf("failed to decode config: %v", err)
+	}
+	tool2, err := cfg2.Initialize(ctx)
+	if err != nil {
+		t.Fatalf("failed to initialize tool: %v", err)
+	}
+	ann2 := tool2.GetAnnotations(nil)
+	if ann2 == nil || ann2.ReadOnlyHint == nil || *ann2.ReadOnlyHint != false {
+		t.Errorf("expected custom readOnlyHint=false preserved, got %v", ann2)
+	}
 }

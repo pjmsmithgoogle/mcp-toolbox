@@ -25,7 +25,9 @@ func newAnnotations(custom *tools.ToolAnnotations, readOnly, destructive bool) *
 	}
 	openWorld := false
 	ann.OpenWorldHint = &openWorld
-	ann.ReadOnlyHint = &readOnly
+	if ann.ReadOnlyHint == nil {
+		ann.ReadOnlyHint = &readOnly
+	}
 	ann.DestructiveHint = &destructive
 	return ann
 }

@@ -228,14 +228,10 @@ func TestManifest(t *testing.T) {
 }
 
 func TestAnnotations(t *testing.T) {
-	readOnlyTrue := true
 	cfg := lkr.Config{
 		ConfigBase: tools.ConfigBase{
 			Name:        "test_tool",
 			Description: "test description",
-			Annotations: &tools.ToolAnnotations{
-				ReadOnlyHint: &readOnlyTrue,
-			},
 		},
 		Type:   "looker-update-agent",
 		Source: "my-instance",

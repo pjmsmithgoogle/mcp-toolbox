@@ -218,14 +218,12 @@ func TestManifest(t *testing.T) {
 }
 
 func TestAnnotations(t *testing.T) {
-	readOnlyTrue := true
 	destructiveFalse := false
 	cfg := lkr.Config{
 		ConfigBase: tools.ConfigBase{
 			Name:        "test_tool",
 			Description: "test description",
 			Annotations: &tools.ToolAnnotations{
-				ReadOnlyHint:    &readOnlyTrue,
 				DestructiveHint: &destructiveFalse,
 			},
 		},

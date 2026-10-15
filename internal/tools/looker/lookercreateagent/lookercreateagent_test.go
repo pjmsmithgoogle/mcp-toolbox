@@ -234,14 +234,10 @@ func TestManifest(t *testing.T) {
 }
 
 func TestAnnotations(t *testing.T) {
-	readOnlyTrue := true
 	cfg := lkr.Config{
 		ConfigBase: tools.ConfigBase{
 			Name:        "test_tool",
 			Description: "test description",
-			Annotations: &tools.ToolAnnotations{
-				ReadOnlyHint: &readOnlyTrue,
-			},
 		},
 		Type:   "looker-create-agent",
 		Source: "my-instance",
@@ -260,7 +256,7 @@ func TestAnnotations(t *testing.T) {
 		t.Fatal("mcp manifest ReadOnlyHint is nil")
 	}
 	if *annotations.ReadOnlyHint != false {
-		t.Errorf("ReadOnlyHint should be false, got %v", *annotations.ReadOnlyHint)
+		t.Errorf("ReadOnlyHint should be false by default, got %v", *annotations.ReadOnlyHint)
 	}
 	if annotations.DestructiveHint == nil {
 		t.Fatal("mcp manifest DestructiveHint is nil")

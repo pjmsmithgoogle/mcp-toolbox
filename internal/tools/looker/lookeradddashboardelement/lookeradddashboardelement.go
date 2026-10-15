@@ -199,6 +199,7 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 	}
 
 	var filterables []v4.ResultMakerFilterables
+	var listeners []v4.ResultMakerFilterablesListen
 	for _, m := range dashFilters {
 		f, ok := m.(map[string]any)
 		if !ok {
@@ -212,21 +213,29 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		if !ok {
 			return nil, util.NewAgentError("error processing dashboard filter: missing field", nil)
 		}
+		if !strings.Contains(field, ".") {
+			var knownFields []string
+			if wq.Fields != nil {
+				knownFields = *wq.Fields
+			}
+			norm := lookercommon.NormalizeFilterKeys(map[string]any{field: true}, knownFields, wq.View)
+			for k := range norm {
+				field = k
+			}
+		}
 		listener := v4.ResultMakerFilterablesListen{
 			DashboardFilterName: &name,
 			Field:               &field,
 		}
-		listeners := []v4.ResultMakerFilterablesListen{listener}
-
-		filter := v4.ResultMakerFilterables{
-			Listen: &listeners,
-		}
-
-		filterables = append(filterables, filter)
+		listeners = append(listeners, listener)
 	}
 
-	if len(filterables) == 0 {
-		filterables = nil
+	if len(listeners) > 0 {
+		filterables = []v4.ResultMakerFilterables{
+			{
+				Listen: &listeners,
+			},
+		}
 	}
 
 	wrm := v4.WriteResultMakerWithIdVisConfigAndDynamicFields{

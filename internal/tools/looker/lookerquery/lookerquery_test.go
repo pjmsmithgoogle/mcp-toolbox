@@ -16,6 +16,8 @@ package lookerquery_test
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -30,15 +32,21 @@ import (
 	v4 "github.com/looker-open-source/sdk-codegen/go/sdk/v4"
 )
 
-type fakeLookerSource struct{}
+type fakeLookerSource struct {
+	settings *rtl.ApiSettings
+	sdk      *v4.LookerSDK
+}
 
 func (f fakeLookerSource) SourceType() string                  { return "looker" }
 func (f fakeLookerSource) ToConfig() sources.SourceConfig      { return nil }
 func (f fakeLookerSource) IsReadOnly() bool                    { return false }
 func (f fakeLookerSource) UseClientAuthorization() bool        { return false }
 func (f fakeLookerSource) GetAuthTokenHeaderName() string      { return "Authorization" }
-func (f fakeLookerSource) LookerApiSettings() *rtl.ApiSettings { return nil }
+func (f fakeLookerSource) LookerApiSettings() *rtl.ApiSettings { return f.settings }
 func (f fakeLookerSource) GetLookerSDK(context.Context, string) (*v4.LookerSDK, error) {
+	if f.sdk != nil {
+		return f.sdk, nil
+	}
 	return &v4.LookerSDK{}, nil
 }
 
@@ -147,8 +155,8 @@ func TestBuildWriteQueryWithOverrides(t *testing.T) {
 	}
 
 	filterOverrides := map[string]any{
-		"customer.last_name": "Simpson",
-		"customer.city":      "", // Empty string override clears default city filter
+		"customer_last_name": "Simpson",
+		"customer_city":      "", // Underscored key override clears default city filter
 	}
 	sortOverrides := []string{"customer.last_name asc"}
 
@@ -222,3 +230,75 @@ func TestInvokeValidationErrors(t *testing.T) {
 		}
 	})
 }
+
+func TestInvokeInlineQueryWithVisConfigAndErrorExtraction(t *testing.T) {
+	ctx, err := testutils.ContextWithNewLogger()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	failMode := false
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/api/4.0/queries/run/json" {
+			if failMode {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"message":"Validation Failed","errors":[{"field":"fields","message":"Unknown field orders.bad_field"}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`[{"orders.count":42}]`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	settings := &rtl.ApiSettings{BaseUrl: ts.URL}
+	session := rtl.NewAuthSession(*settings)
+	session.Client = *ts.Client()
+	sdk := v4.NewLookerSDK(session)
+
+	cfg := lkr.Config{
+		ConfigBase: tools.ConfigBase{
+			Name:        "query",
+			Description: "Execute an inline query",
+		},
+		Type:   "looker-query",
+		Source: "looker-source",
+	}
+	tool, err := cfg.Initialize(ctx)
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	params := parameters.ParamValues{
+		{Name: "model", Value: "thelook"},
+		{Name: "explore", Value: "orders"},
+		{Name: "fields", Value: []any{"orders.count"}},
+		{Name: "vis_config", Value: `{"type":"single_value"}`},
+	}
+	res, tbErr := tool.Invoke(ctx, fakeLookerSource{settings: settings, sdk: sdk}, params, "")
+	if tbErr != nil {
+		t.Fatalf("Invoke failed: %v", tbErr)
+	}
+	structured, ok := res.(tools.StructuredToolResult)
+	if !ok {
+		t.Fatalf("expected StructuredToolResult when vis_config is provided on inline json query, got %T", res)
+	}
+	visCfg, ok := structured.StructuredContent["vis_config"].(map[string]any)
+	if !ok || visCfg["type"] != "single_value" {
+		t.Errorf("expected vis_config.type=single_value, got %v", structured.StructuredContent["vis_config"])
+	}
+	contentMap, ok := structured.Content.(map[string]any)
+	if !ok || contentMap["data"] == nil {
+		t.Errorf("expected structured.Content to include data, got %v", structured.Content)
+	}
+
+	failMode = true
+	_, tbErr = tool.Invoke(ctx, fakeLookerSource{settings: settings, sdk: sdk}, params, "")
+	if tbErr == nil || tbErr.Error() != "error processing request: Validation Failed" {
+		t.Errorf("expected extracted Looker error message on inline query error, got %v", tbErr)
+	}
+}
+
+

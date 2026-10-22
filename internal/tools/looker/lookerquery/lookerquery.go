@@ -109,7 +109,7 @@ func (cfg Config) Initialize(context.Context) (tools.Tool, error) {
 	)
 	visConfigParameter := parameters.NewStringParameter(
 		"vis_config",
-		"Optional visualization configuration JSON string to associate with the query response.",
+		"Optional visualization configuration JSON string to associate with the query response (e.g. {\"type\": \"looker_column\"} for vertical columns or {\"type\": \"looker_bar\"} for horizontal bars).",
 		parameters.WithStringDefault(""),
 	)
 	generateDrillLinksParameter := parameters.NewBooleanParameter(
@@ -164,13 +164,24 @@ func (t Tool) ValidateSource(source sources.Source) error {
 // applying sortOverrides if non-empty. FilterConfig and ClientId are intentionally
 // omitted so Looker does not allow explore UI filter_config to override Filters.
 func BuildWriteQueryWithOverrides(baseQuery v4.Query, filterOverrides map[string]any, sortOverrides []string) v4.WriteQuery {
+	var knownFields []string
+	if baseQuery.Fields != nil {
+		knownFields = append(knownFields, *baseQuery.Fields...)
+	}
+	if baseQuery.Filters != nil {
+		for k := range *baseQuery.Filters {
+			knownFields = append(knownFields, k)
+		}
+	}
+	normalizedOverrides := lookercommon.NormalizeFilterKeys(filterOverrides, knownFields, baseQuery.View)
+
 	mergedFilters := make(map[string]any)
 	if baseQuery.Filters != nil {
 		for k, v := range *baseQuery.Filters {
 			mergedFilters[k] = v
 		}
 	}
-	for k, v := range filterOverrides {
+	for k, v := range normalizedOverrides {
 		mergedFilters[k] = v
 	}
 
@@ -218,6 +229,26 @@ func sortsMatchBaseQuery(sortOverrides []string, baseSorts *[]string) bool {
 	return true
 }
 
+func applySavedQueryPayloadLimit(result map[string]any) tools.StructuredToolResult {
+	if _, tooLarge := lookercommon.ExceedsMCPPayloadLimit(result, lookercommon.MaxMCPPayloadBytes); tooLarge {
+		result["data"] = []any{}
+		delete(result, "totals_data")
+		delete(result, "pivots")
+		result["status"] = "error"
+		result["response_too_large"] = true
+		result["error"] = "This query returned too much data to display here. Open it in Looker Explore to view the full result."
+		return tools.StructuredToolResult{
+			Content:           result,
+			StructuredContent: result,
+		}
+	}
+
+	return tools.StructuredToolResult{
+		Content:           result,
+		StructuredContent: result,
+	}
+}
+
 func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.ParamValues, accessToken tools.AccessToken) (any, util.ToolboxError) {
 	source, ok := s.(compatibleSource)
 	if !ok {
@@ -251,38 +282,38 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		generateDrillLinks = &gdl
 	}
 
+	var filterOverrides map[string]any
+	if fMap, ok := paramsMap["filters"].(map[string]any); ok && len(fMap) > 0 {
+		filterOverrides = make(map[string]any, len(fMap))
+		for k, v := range fMap {
+			newKey := k
+			if len(k) >= 2 && (k[0] == '\'' || k[0] == '"') && k[0] == k[len(k)-1] {
+				newKey = k[1 : len(k)-1]
+			}
+			newVal := v
+			if s, ok := v.(string); ok && len(s) >= 2 &&
+				(s[0] == '\'' || s[0] == '"') && s[0] == s[len(s)-1] {
+				newVal = s[1 : len(s)-1]
+			}
+			filterOverrides[newKey] = newVal
+		}
+	}
+
+	var sortOverrides []string
+	if sSlice, ok := paramsMap["sorts"].([]any); ok && len(sSlice) > 0 {
+		converted, err := parameters.ConvertAnySliceToTyped(sSlice, "string")
+		if err != nil {
+			return nil, util.NewAgentError("can't convert sorts to array of strings", err)
+		}
+		sortOverrides = converted.([]string)
+	}
+
 	sdk, err := source.GetLookerSDK(ctx, string(accessToken))
 	if err != nil {
 		return nil, util.NewClientServerError("error getting sdk", http.StatusInternalServerError, err)
 	}
 
 	if queryId != "" {
-		var filterOverrides map[string]any
-		if fMap, ok := paramsMap["filters"].(map[string]any); ok && len(fMap) > 0 {
-			filterOverrides = make(map[string]any, len(fMap))
-			for k, v := range fMap {
-				newKey := k
-				if len(k) >= 2 && (k[0] == '\'' || k[0] == '"') && k[0] == k[len(k)-1] {
-					newKey = k[1 : len(k)-1]
-				}
-				newVal := v
-				if s, ok := v.(string); ok && len(s) >= 2 &&
-					(s[0] == '\'' || s[0] == '"') && s[0] == s[len(s)-1] {
-					newVal = s[1 : len(s)-1]
-				}
-				filterOverrides[newKey] = newVal
-			}
-		}
-
-		var sortOverrides []string
-		if sSlice, ok := paramsMap["sorts"].([]any); ok && len(sSlice) > 0 {
-			converted, err := parameters.ConvertAnySliceToTyped(sSlice, "string")
-			if err != nil {
-				return nil, util.NewAgentError("can't convert sorts to array of strings", err)
-			}
-			sortOverrides = converted.([]string)
-		}
-
 		hasOverrides := len(filterOverrides) > 0 || len(sortOverrides) > 0
 
 		var resp string
@@ -298,7 +329,7 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 				if strings.Contains(qErr.Error(), "status=401") {
 					return nil, util.NewClientServerError("unauthorized error", http.StatusUnauthorized, qErr)
 				}
-				return nil, util.ProcessGeneralError(qErr)
+				return nil, util.ProcessGeneralError(lookercommon.ExtractLookerErrorMessage(qErr))
 			}
 
 			if len(filterOverrides) == 0 && sortsMatchBaseQuery(sortOverrides, baseQuery.Sorts) {
@@ -331,7 +362,7 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 			if strings.Contains(rErr.Error(), "status=401") {
 				return nil, util.NewClientServerError("unauthorized error", http.StatusUnauthorized, rErr)
 			}
-			return nil, util.ProcessGeneralError(rErr)
+			return nil, util.ProcessGeneralError(lookercommon.ExtractLookerErrorMessage(rErr))
 		}
 
 		if resultFormat == "json_detail" {
@@ -357,7 +388,7 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 			if visConfigObj != nil {
 				result["vis_config"] = visConfigObj
 			}
-			return result, nil
+			return applySavedQueryPayloadLimit(result), nil
 		}
 
 		var rawData []any
@@ -365,12 +396,20 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 			return nil, util.NewClientServerError("error unmarshaling query response", http.StatusInternalServerError, err)
 		}
 		if visConfigObj != nil {
-			return map[string]any{
+			result := map[string]any{
 				"data":       rawData,
 				"query_id":   queryId,
 				"status":     "success",
 				"vis_config": visConfigObj,
-			}, nil
+			}
+			return applySavedQueryPayloadLimit(result), nil
+		}
+		if _, tooLarge := lookercommon.ExceedsMCPPayloadLimit(rawData, lookercommon.MaxMCPPayloadBytes); tooLarge {
+			return applySavedQueryPayloadLimit(map[string]any{
+				"data":     rawData,
+				"query_id": queryId,
+				"status":   "success",
+			}), nil
 		}
 		return rawData, nil
 	}
@@ -378,15 +417,15 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 	// Inline query path (query_id is empty)
 	modelVal, _ := paramsMap["model"].(string)
 	if strings.TrimSpace(modelVal) == "" {
-		return nil, util.NewAgentError("model is required when query_id is not provided", nil)
+		return nil, util.NewAgentError("model is required when query_id is not provided; use get_models to discover available models and retry", nil)
 	}
 	exploreVal, _ := paramsMap["explore"].(string)
 	if strings.TrimSpace(exploreVal) == "" {
-		return nil, util.NewAgentError("explore is required when query_id is not provided", nil)
+		return nil, util.NewAgentError("explore is required when query_id is not provided; use get_explores to discover available explores and retry", nil)
 	}
 	fieldsSlice, _ := paramsMap["fields"].([]any)
 	if len(fieldsSlice) == 0 {
-		return nil, util.NewAgentError("fields is required when query_id is not provided", nil)
+		return nil, util.NewAgentError("fields is required when query_id is not provided; use get_dimensions and get_measures to discover available fields and retry", nil)
 	}
 
 	wq, err := lookercommon.ProcessQueryArgs(ctx, params)
@@ -401,7 +440,7 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		if strings.Contains(err.Error(), "status=401") {
 			return nil, util.NewClientServerError("unauthorized error", http.StatusUnauthorized, err)
 		}
-		return nil, util.ProcessGeneralError(err)
+		return nil, util.ProcessGeneralError(lookercommon.ExtractLookerErrorMessage(err))
 	}
 
 	logger.DebugContext(ctx, "resp = ", resp)
@@ -410,6 +449,11 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		var detailResp map[string]any
 		if err := json.Unmarshal([]byte(resp), &detailResp); err != nil {
 			return nil, util.NewClientServerError("error unmarshaling json_detail response", http.StatusInternalServerError, err)
+		}
+		if wq.Pivots != nil && len(*wq.Pivots) > 0 {
+			if pivErr := lookercommon.ValidatePivotsInDetailResponse(*wq.Pivots, detailResp); pivErr != nil {
+				return nil, util.NewAgentError(pivErr.Error(), pivErr)
+			}
 		}
 		if generateDrillLinks != nil && !*generateDrillLinks {
 			lookercommon.StripDrillLinks(detailResp)
@@ -427,7 +471,7 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 		if visConfigObj != nil {
 			result["vis_config"] = visConfigObj
 		}
-		return result, nil
+		return applySavedQueryPayloadLimit(result), nil
 	}
 
 	var data []any
@@ -437,6 +481,21 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 	}
 
 	logger.DebugContext(ctx, "data = ", data)
+
+	if visConfigObj != nil {
+		result := map[string]any{
+			"data":       data,
+			"status":     "success",
+			"vis_config": visConfigObj,
+		}
+		return applySavedQueryPayloadLimit(result), nil
+	}
+	if _, tooLarge := lookercommon.ExceedsMCPPayloadLimit(data, lookercommon.MaxMCPPayloadBytes); tooLarge {
+		return applySavedQueryPayloadLimit(map[string]any{
+			"data":   data,
+			"status": "success",
+		}), nil
+	}
 
 	return data, nil
 }

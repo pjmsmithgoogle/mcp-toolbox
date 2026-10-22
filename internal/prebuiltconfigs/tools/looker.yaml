@@ -184,7 +184,7 @@ description: |
   - fields: A list of field names (dimensions, measures, filters, or parameters) to include in the query. Required if `query_id` is not provided.
 
   Optional Parameters:
-  - pivots: A list of fields to pivot the results by. These fields must also be included in the `fields` list.
+  - pivots: A list of fields to pivot the results by. Any pivot field omitted from `fields` is automatically appended to `fields`.
   - filters: A map of filter expressions, e.g., `{"view_name.field_name": "value", "view_name.date": "7 days"}`.
     - Each key must be a fully-scoped `view_name.field_name`, copied verbatim from
       `get_dimensions`, `get_measures`, `get_filters`, or `get_parameters`. The view

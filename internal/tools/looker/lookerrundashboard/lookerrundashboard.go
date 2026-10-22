@@ -291,6 +291,11 @@ func runQuery(ctx context.Context, sdk *v4.LookerSDK, q v4.Query, options *rtl.A
 		QueryTimezone: q.QueryTimezone,
 		Limit:         q.Limit,
 	}
+	if escErr := lookercommon.EscapeUnquotedParameterFilters(ctx, sdk, &wq, options); escErr != nil {
+		if logger, lErr := util.LoggerFromContext(ctx); lErr == nil {
+			logger.WarnContext(ctx, "skipping unquoted-parameter escape, metadata lookup failed", "error", escErr)
+		}
+	}
 	query_result, err := lookercommon.RunInlineQuery(ctx, sdk, &wq, "json", options)
 	if err != nil {
 		data["query_status"] = fmt.Sprintf("error running query: %s", err)
